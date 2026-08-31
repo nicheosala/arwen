@@ -162,16 +162,40 @@ class TestETagAndIfMatch:
     def test_delete_with_stale_if_match_returns_412_and_leaves_resource_in_place(
         self, single_resource_server: FakeCalDAVServer
     ) -> None:
-        """A stale If-Match on DELETE must be rejected with 412 and the resource must survive."""
+        """A DELETE carrying a genuinely superseded ETag must be rejected with 412."""
         server = single_resource_server
+        resource = server.collections["personal"].resources["event1.ics"]
         href = _resource_href(server)
+        stale_etag = resource.etag
 
-        status, _headers, _body = _request(
-            server.base_url, "DELETE", href, headers={"If-Match": '"not-the-current-etag"'}
+        put_status, _headers, _body = _request(
+            server.base_url,
+            "PUT",
+            href,
+            headers={"If-Match": stale_etag},
+            body=_ics("uid-1", "Rescheduled"),
+        )
+        assert put_status == 204
+        current_etag = resource.etag
+        assert current_etag != stale_etag  # the PUT must have actually superseded it
+
+        stale_status, _headers, _body = _request(
+            server.base_url, "DELETE", href, headers={"If-Match": stale_etag}
         )
 
-        assert status == 412
+        assert stale_status == 412
         assert "event1.ics" in server.collections["personal"].resources
+        assert resource.etag == current_etag
+
+        # The comparison must not just reject the stale tag — it must also accept the
+        # genuinely current one, or a mutant that rejects unconditionally would still
+        # satisfy every assertion above.
+        current_status, _headers, _body = _request(
+            server.base_url, "DELETE", href, headers={"If-Match": current_etag}
+        )
+
+        assert current_status == 204
+        assert "event1.ics" not in server.collections["personal"].resources
 
     def test_delete_with_matching_if_match_succeeds(
         self, single_resource_server: FakeCalDAVServer
