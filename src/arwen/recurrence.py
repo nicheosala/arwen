@@ -9,12 +9,20 @@ division of labour is a CLAUDE.md §1.1 / brief §5.4 invariant: everything
 else in this module (still to be added) is hand-written.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
 import recurring_ical_events
 
-from arwen.model import AllDayDate, EventTime, Occurrence, parse_event_time
+from arwen.model import (
+    Action,
+    AllDayDate,
+    EventTime,
+    FloatingDateTime,
+    Instant,
+    Occurrence,
+    parse_event_time,
+)
 
 if TYPE_CHECKING:
     from icalendar import Calendar, Component
@@ -85,6 +93,69 @@ def effective_end(component: Component) -> EventTime:
     if isinstance(start, AllDayDate):
         return start + timedelta(days=1)
     return start
+
+
+def _compare_to_boundary(value: EventTime, boundary: date, zone: tzinfo) -> int:
+    """Compare ``value`` against ``DATE`` at 00:00:00 in ``zone``, per brief §5.1.
+
+    An :class:`AllDayDate` is compared as a pure date, with no zone
+    conversion. A :class:`FloatingDateTime` is first resolved into ``zone``.
+    An :class:`Instant` is compared directly, since it already carries an
+    absolute moment.
+
+    Returns:
+        A negative number if ``value`` is strictly before the boundary, zero
+        if it falls exactly on it, and a positive number if it is strictly
+        after.
+    """
+    if isinstance(value, AllDayDate):
+        if value.value < boundary:
+            return -1
+        if value.value > boundary:
+            return 1
+        return 0
+
+    instant = value.resolve(zone) if isinstance(value, FloatingDateTime) else value
+    boundary_instant = Instant(datetime(boundary.year, boundary.month, boundary.day, tzinfo=zone))
+    if instant.value < boundary_instant.value:
+        return -1
+    if instant.value > boundary_instant.value:
+        return 1
+    return 0
+
+
+def classify_non_recurring(component: Component, boundary: date, zone: tzinfo) -> Action:
+    """Classify a non-recurring event against ``DATE``, per brief §5.3.
+
+    ``effective_end`` is always exclusive (RFC 5545 §3.6.1, and — for
+    all-day events — brief §5.1), so an event whose effective end falls
+    exactly on the boundary has already finished before it and is deleted,
+    not treated as straddling.
+
+    Arguments:
+        component: The event component to classify. Must be non-recurring;
+            callers are responsible for routing recurring components (any
+            ``RRULE``, ``RDATE``, or ``RECURRENCE-ID``) to the §5.4 pruning
+            engine instead.
+        boundary: The ``DATE`` argument of ``delete before``, as a pure
+            calendar date.
+        zone: The timezone resolved for this run (brief §5.1), used to
+            interpret floating date-times and to anchor the boundary itself.
+
+    Returns:
+        :attr:`Action.DELETE` if the event ends entirely before ``DATE``,
+        :attr:`Action.SKIP_STRADDLING` if it starts before ``DATE`` but is
+        still ongoing at or after it, or :attr:`Action.UNTOUCHED` if it
+        starts on or after ``DATE``.
+    """
+    start = start_of(component)
+    end = effective_end(component)
+
+    if _compare_to_boundary(end, boundary, zone) <= 0:
+        return Action.DELETE
+    if _compare_to_boundary(start, boundary, zone) < 0:
+        return Action.SKIP_STRADDLING
+    return Action.UNTOUCHED
 
 
 def expand_occurrences(calendar: Calendar, start: datetime, end: datetime) -> list[Occurrence]:

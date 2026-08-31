@@ -10,6 +10,7 @@ bare :class:`datetime.datetime` that a caller could misinterpret.
 
 import datetime as _dt
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -121,3 +122,16 @@ class Occurrence:
     start: EventTime
     end: EventTime
     component: Component
+
+
+class Action(Enum):
+    """The per-resource action taken, or that would be taken, by a delete run.
+
+    Recorded in the report (brief §8) for every resource that classification
+    or pruning decided to act on. Kept as an enum rather than a bare string so
+    a new outcome cannot be introduced by typo (CLAUDE.md §1.1).
+    """
+
+    DELETE = "delete"
+    SKIP_STRADDLING = "skip-straddling"
+    UNTOUCHED = "untouched"
