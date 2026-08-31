@@ -11,10 +11,11 @@ implement them.
 ## 1. Hard constraints
 
 - **Python 3.14**, project managed with **Poetry**, `src/` layout.
-- **Runtime dependencies: `caldav` and `icalendar` only.** Everything else must
-  come from the standard library (`argparse`, `zoneinfo`, `hashlib`, `logging`,
-  `datetime`, `http.server` for tests). Do not add HTTP clients, config
-  libraries, CLI frameworks, or date parsers.
+- **Runtime dependencies: `caldav`, `icalendar`, and `recurring-ical-events`
+  only.** Everything else must come from the standard library (`argparse`,
+  `zoneinfo`, `hashlib`, `logging`, `datetime`, `http.server` for tests). Do not
+  add HTTP clients, config libraries, CLI frameworks, or date parsers.
+  `recurring-ical-events` is used for occurrence expansion only — see §5.4.
 - **Everything in English**: code, comments, docstrings, README, CLI output,
   error messages, commit messages.
 - **Dry-run is the default.** Nothing is ever written to the server unless
@@ -53,16 +54,21 @@ warn_unused_ignores = true
 disallow_any_unimported = true
 ```
 
-**Third-party stubs.** `caldav` and `icalendar` may not ship complete type
-information. Do not paper over this by loosening the global configuration and do
-not scatter `# type: ignore` through the codebase. Instead:
+**Third-party stubs.** `caldav`, `icalendar`, and `recurring-ical-events` may
+not ship complete type information. Do not paper over this by loosening the
+global configuration and do not scatter `# type: ignore` through the codebase.
+Instead:
 
 - confine any per-module relaxation to explicit `[[tool.mypy.overrides]]`
   entries naming those packages, and nothing else;
 - **isolate the untyped surface behind an adapter layer.** `dav.py` is the only
   module allowed to touch `caldav` directly, and it exposes fully typed domain
   objects to the rest of the code. `Any` must not leak into `recurrence.py`,
-  `dedup.py`, or `dedup`'s callers;
+  `dedup.py`, or their callers;
+- likewise, every call into `recurring-ical-events` goes through a single thin
+  expansion function that returns a typed structure of your own. That function
+  is the only place where a scoped override may apply — the pruning logic
+  around it stays fully typed;
 - every `# type: ignore` that survives must be narrowly coded
   (`# type: ignore[attr-defined]`, never bare) and carry a one-line comment
   explaining why. `warn_unused_ignores` will catch the ones that become
@@ -207,6 +213,13 @@ A resource counts as recurring if **any** of its components carries `RRULE`,
 
 Goal: drop only the occurrences that are entirely before `DATE`, keep the rest,
 and write the result back with a **single `PUT`** per resource.
+
+**Division of labour.** Use `recurring-ical-events` for **occurrence expansion
+only** — both to find the occurrences to remove in step 1 and to expand the
+pruned result for the validation gate in step 4. Everything else stays
+hand-written in `recurrence.py`: the `COUNT` → `UNTIL` conversion, the `DTSTART`
+shift, `EXDATE` generation, override removal, and the before/after comparison.
+The library must never perform, or decide, any mutation of the calendar data.
 
 1. Expand occurrences. If every occurrence ends before `DATE`, delete the whole
    resource. If none is affected, leave it untouched.
@@ -368,7 +381,13 @@ credentials and no network.
 
 ### Layer 1 — unit tests on the pure functions
 
-Against a fixture corpus in `tests/fixtures/`. Required pathological cases:
+Against a fixture corpus in `tests/fixtures/`. For every pruning fixture, assert
+the expansion of the pruned resource against an **explicitly written expected
+list of instants**, not merely against another call to the same expander.
+`recurring-ical-events` is the tool under use, not the oracle; a test that
+compares the library to itself proves nothing about the pruning.
+
+Required pathological cases:
 
 - all-day event whose exclusive `DTEND` makes a naive implementation off by one
   day (both commands);
@@ -443,7 +462,9 @@ Docstrings on every public function.
   by them later, but expose no CLI surface for them now.
 - Duplicate detection among recurring events.
 - Any `--from` / range-with-lower-bound variant of `delete before`.
-- Dependencies beyond `caldav` and `icalendar` (dev dependencies aside).
+- Dependencies beyond `caldav`, `icalendar`, and `recurring-ical-events` (dev
+  dependencies aside).
+- Using `recurring-ical-events` for anything other than reading out occurrences.
 - Persisting calendar ids or hrefs between runs.
 - Interactive confirmation prompts other than calendar selection.
 - Any code path that branches on which server is on the other end.
