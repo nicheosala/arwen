@@ -20,7 +20,7 @@ which stage of the work is in progress.
   read during the scan. A `412` is a conflict: skip that resource, record it,
   continue, and reflect it in the exit code — never a fatal error, never a
   blind retry without the ETag.
-- **No dependencies beyond `caldav`, `icalendar`, and `recurring-ical-events`**
+- **No dependencies beyond `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events`**
   at runtime. Everything else comes from the standard library. `pytest`,
   `ruff`, and `mypy` are dev dependencies only. Do not add HTTP clients, config
   libraries, CLI frameworks, or date parsers.

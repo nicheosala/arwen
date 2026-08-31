@@ -11,7 +11,7 @@ implement them.
 ## 1. Hard constraints
 
 - **Python 3.14**, project managed with **Poetry**, `src/` layout.
-- **Runtime dependencies: `caldav`, `icalendar`, and `recurring-ical-events`
+- **Runtime dependencies: `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events`
   only.** Everything else must come from the standard library (`argparse`,
   `zoneinfo`, `hashlib`, `logging`, `datetime`, `http.server` for tests). Do not
   add HTTP clients, config libraries, CLI frameworks, or date parsers.
@@ -54,7 +54,7 @@ warn_unused_ignores = true
 disallow_any_unimported = true
 ```
 
-**Third-party stubs.** `caldav`, `icalendar`, and `recurring-ical-events` may
+**Third-party stubs.** `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events` may
 not ship complete type information. Do not paper over this by loosening the
 global configuration and do not scatter `# type: ignore` through the codebase.
 Instead:
@@ -462,7 +462,7 @@ Docstrings on every public function.
   by them later, but expose no CLI surface for them now.
 - Duplicate detection among recurring events.
 - Any `--from` / range-with-lower-bound variant of `delete before`.
-- Dependencies beyond `caldav`, `icalendar`, and `recurring-ical-events` (dev
+- Dependencies beyond `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events` (dev
   dependencies aside).
 - Using `recurring-ical-events` for anything other than reading out occurrences.
 - Persisting calendar ids or hrefs between runs.
