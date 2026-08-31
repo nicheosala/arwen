@@ -14,7 +14,7 @@ which stage of the work is in progress.
   no way to turn it off.
 - **Backup before mutation.** On `--execute`, every resource that will be
   deleted or modified is written to the backup file, flushed and fsynced,
-  *before the first mutating request*. If the backup cannot be written, abort
+  _before the first mutating request_. If the backup cannot be written, abort
   without touching the server.
 - **`If-Match` on every mutation.** Every `PUT` and `DELETE` carries the ETag
   read during the scan. A `412` is a conflict: skip that resource, record it,
@@ -39,6 +39,8 @@ which stage of the work is in progress.
   `recurrence.py` and `dedup.py` is pure functions over `icalendar` objects —
   no I/O there. Calls into `recurring-ical-events` go through a single thin,
   typed expansion function.
+- Target is Python 3.14 with PEP 649 deferred annotation evaluation. Do not add
+  `from __future__ import annotations` — forward references work without it.
 
 ## §1.1 quality gates
 

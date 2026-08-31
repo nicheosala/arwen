@@ -49,3 +49,7 @@ disallow_any_unimported = true
 [[tool.mypy.overrides]]
 module = ["icalendar.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["recurring_ical_events.*"]
+ignore_missing_imports = true

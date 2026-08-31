@@ -26,8 +26,6 @@ This module is test infrastructure only. It must not be imported by anything
 under ``src/``.
 """
 
-from __future__ import annotations
-
 import datetime
 import hashlib
 import random

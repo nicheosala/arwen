@@ -7,8 +7,6 @@ log, and determinism of the shuffled-ordering mode are all exercised here
 directly over HTTP, using nothing but the standard library.
 """
 
-from __future__ import annotations
-
 import datetime
 import http.client
 from typing import TYPE_CHECKING
