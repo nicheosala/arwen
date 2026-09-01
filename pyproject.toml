@@ -54,3 +54,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["recurring_ical_events.*"]
 ignore_missing_imports = true
+
+# python-dateutil ships no type information. Only recurrence.py touches it,
+# through dateutil.rrule, and every value that crosses back out of those calls
+# is bound to an explicitly annotated name (brief §1.1).
+[[tool.mypy.overrides]]
+module = ["dateutil.*"]
+ignore_missing_imports = true

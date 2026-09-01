@@ -14,7 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from icalendar import Component
+    from icalendar import Calendar, Component
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,5 +133,45 @@ class Action(Enum):
     """
 
     DELETE = "delete"
+    MODIFY = "modify"
     SKIP_STRADDLING = "skip-straddling"
+    SKIP_UNPRUNABLE = "skip-unprunable"
     UNTOUCHED = "untouched"
+
+
+class PruneStrategy(Enum):
+    """How :func:`arwen.recurrence.prune_recurring` reached its result.
+
+    Brief §5.4 makes the ``DTSTART`` shift the primary strategy and
+    ``EXDATE``-only pruning the fallback taken when the shifted result fails
+    the validation gate. A resource made only of ``RECURRENCE-ID`` overrides
+    has no master ``DTSTART`` to shift, so dropping the dead overrides is a
+    strategy of its own rather than a degenerate shift.
+    """
+
+    DTSTART_SHIFT = "dtstart-shift"
+    EXDATE_ONLY = "exdate-only"
+    OVERRIDE_REMOVAL = "override-removal"
+
+
+@dataclass(frozen=True, slots=True)
+class PruneResult:
+    """The outcome of pruning one recurring resource, per brief §5.4.
+
+    Attributes:
+        action: What the caller should do with the resource. ``MODIFY`` is
+            the only action that carries a :attr:`calendar`.
+        calendar: The validated, pruned calendar to ``PUT`` back, or ``None``
+            when nothing is to be written. Never an unvalidated result
+            (brief §5.4 step 4).
+        strategy: Which strategy produced :attr:`calendar`, or ``None`` when
+            no pruning happened.
+        removed: How many occurrences of the original were dropped.
+        kept: How many occurrences of the original survive.
+    """
+
+    action: Action
+    calendar: Calendar | None = None
+    strategy: PruneStrategy | None = None
+    removed: int = 0
+    kept: int = 0
