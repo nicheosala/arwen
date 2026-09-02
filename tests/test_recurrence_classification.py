@@ -99,3 +99,32 @@ def test_floating_datetime_is_resolved_in_the_run_timezone() -> None:
     action = classify_non_recurring(event, date(2024, 3, 15), ZoneInfo("Europe/Rome"))
 
     assert action == Action.SKIP_STRADDLING
+
+
+def test_duration_instead_of_dtend_is_used_to_derive_the_effective_end() -> None:
+    """Brief §5.2: DTSTART + DURATION stands in for DTEND when DTEND is absent.
+
+    The fixture runs 09:00-11:00 UTC on 2024-03-01 via DURATION alone; a
+    naive implementation that ignored DURATION would treat the event as
+    zero-length and delete it a day too early.
+    """
+    event = _load_event("non_recurring_duration.ics")
+
+    action = classify_non_recurring(event, date(2024, 3, 2), UTC)
+
+    assert action == Action.DELETE
+
+
+def test_event_with_neither_dtend_nor_duration_ends_at_its_own_start() -> None:
+    """Brief §5.2: with no DTEND and no DURATION, a timed event's end is its DTSTART.
+
+    The fixture starts (and, per this default, ends) at 2024-03-01T09:00:00Z;
+    a naive implementation that treated a missing DTEND as "open-ended" would
+    never delete it, and one that defaulted to a full day (the all-day rule)
+    would delete it a day too late.
+    """
+    event = _load_event("non_recurring_no_dtend.ics")
+
+    action = classify_non_recurring(event, date(2024, 3, 2), UTC)
+
+    assert action == Action.DELETE

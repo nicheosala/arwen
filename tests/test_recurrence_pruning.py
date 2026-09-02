@@ -6,11 +6,12 @@ the tool under use, never the oracle: a test that compared one call to
 ``recurring-ical-events`` against another would prove nothing about the
 hand-written pruning in :mod:`arwen.recurrence`.
 
-This is deliberately not the full pathological corpus of §10 — it covers the
-logic implemented here (the ``COUNT`` conversion, the ``DTSTART`` shift,
+Together with :mod:`tests.test_recurrence_classification`, this covers the
+§10 pathological corpus: the ``COUNT`` conversion, the ``DTSTART`` shift,
 ``RDATE`` and ``EXDATE`` housekeeping, override removal, the revision bump,
-and the validation gate with its ``EXDATE``-only fallback), and the corpus
-lands with the next stage.
+the validation gate with its ``EXDATE``-only fallback, ``UNTIL``-bounded and
+``BYSETPOS`` rules, a ``RECURRENCE-ID`` keyed by a UTC-equivalent instant of a
+``TZID``-qualified master, and line folding, escaping, and non-ASCII text.
 """
 
 from datetime import UTC, date, datetime, time, tzinfo
@@ -452,3 +453,113 @@ def test_pruning_keeps_exactly_the_occurrences_that_reach_the_boundary() -> None
         assert result.action is Action.MODIFY, fixture_name
         assert result.calendar is not None
         assert _starts(result.calendar) == expected, fixture_name
+
+
+def test_explicit_until_is_left_alone_by_the_shift() -> None:
+    """Brief §5.4 step 2: an ``RRULE`` already bounded by ``UNTIL`` needs no conversion.
+
+    The fixture is the ``UNTIL``-expressed twin of ``recurring_count_weekly``
+    (same ten Monday occurrences, same boundary): only the right-hand
+    ``UNTIL`` must survive unrecomputed while ``DTSTART`` shifts underneath it,
+    per the brief's note that ``UNTIL`` "is not the boundary this command
+    touches".
+    """
+    result = _prune_fixture("recurring_until_weekly.ics", date(2024, 2, 1))
+    pruned = _pruned(result)
+
+    text = _ical_text(pruned)
+    assert "RRULE:FREQ=WEEKLY;UNTIL=20240304T090000Z" in text
+    assert "DTSTART:20240205T090000Z" in text
+    assert (result.removed, result.kept) == (5, 5)
+    assert _starts(pruned) == [
+        "2024-02-05T09:00:00Z",
+        "2024-02-12T09:00:00Z",
+        "2024-02-19T09:00:00Z",
+        "2024-02-26T09:00:00Z",
+        "2024-03-04T09:00:00Z",
+    ]
+
+
+def test_bysetpos_rule_is_shifted_to_the_first_surviving_occurrence() -> None:
+    """A ``BYSETPOS`` rule ("last weekday of the month") shifts like any other.
+
+    The fixture runs monthly on the last weekday from 2024-01-31 for six
+    occurrences (2024-01-31, 02-29, 03-29, 04-30, 05-31, 06-28 — verified by
+    hand against a calendar, independently of both ``recurring-ical-events``
+    and the engine under test). Pruning before 2024-04-01 drops the first
+    three; the ``BYSETPOS`` selection is computed per month, so shifting
+    ``DTSTART`` to 2024-04-30 does not perturb which day the rule picks in the
+    months that follow.
+    """
+    result = _prune_fixture("recurring_bysetpos_monthly.ics", date(2024, 4, 1))
+    pruned = _pruned(result)
+
+    assert result.strategy is PruneStrategy.DTSTART_SHIFT
+    text = _ical_text(pruned)
+    assert "DTSTART:20240430T090000Z" in text
+    assert "RRULE:FREQ=MONTHLY;UNTIL=20240628T090000Z;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1" in text
+    assert not any(line.startswith("RRULE") and "COUNT" in line for line in _lines(pruned))
+    assert (result.removed, result.kept) == (3, 3)
+    assert _starts(pruned) == [
+        "2024-04-30T09:00:00Z",
+        "2024-05-31T09:00:00Z",
+        "2024-06-28T09:00:00Z",
+    ]
+
+
+def test_recurrence_id_matches_master_instant_across_tzid_and_utc_form() -> None:
+    """A ``RECURRENCE-ID`` may be written in UTC even when the master carries a ``TZID``.
+
+    RFC 5545 matches ``RECURRENCE-ID`` to the master's generated instant by
+    moment, not by literal representation. The fixture's master recurs at
+    09:00 ``Europe/Rome`` (08:00 UTC, no DST in play before the March
+    transition); its override's ``RECURRENCE-ID`` is written as
+    ``20240205T080000Z`` instead of the equivalent ``TZID`` form, and pulls
+    that occurrence back into January. If the engine failed to recognise the
+    two as the same instant, the override would not be matched to the 2024-02-05
+    rule occurrence, that occurrence would be judged by the master's nominal
+    (unmoved) time instead, and it would wrongly survive pruning.
+    """
+    result = _prune_fixture("recurring_recurrence_id_tzid_equivalent.ics", date(2024, 2, 1))
+    pruned = _pruned(result)
+
+    assert result.strategy is PruneStrategy.DTSTART_SHIFT
+    text = _ical_text(pruned)
+    assert "DTSTART;TZID=Europe/Rome:20240212T090000" in text
+    assert "RRULE:FREQ=WEEKLY;UNTIL=20240304T080000Z" in text
+    assert "Pulled back via UTC-form RECURRENCE-ID" not in text
+    assert not any(line.startswith("RECURRENCE-ID") for line in _lines(pruned))
+    assert (result.removed, result.kept) == (6, 4)
+    assert _starts(pruned) == [
+        "2024-02-12T08:00:00Z",
+        "2024-02-19T08:00:00Z",
+        "2024-02-26T08:00:00Z",
+        "2024-03-04T08:00:00Z",
+    ]
+
+
+def test_folded_escaped_non_ascii_text_survives_pruning_verbatim() -> None:
+    r"""Line folding, RFC 5545 escaping, and non-ASCII text are not the engine's business.
+
+    The fixture's ``SUMMARY`` is a folded, non-ASCII line and its
+    ``DESCRIPTION`` uses every general escape (``\\,``, ``\\;``, ``\\n``).
+    Pruning must round-trip both verbatim: the ``DTSTART`` shift touches only
+    ``DTSTART``/``DTEND``/``RRULE``/the revision stamps, per brief §5.4 step 5.
+    """
+    result = _prune_fixture("recurring_unicode_folding.ics", date(2024, 2, 1))
+    pruned = _pruned(result)
+
+    text = _ical_text(pruned)
+    assert (
+        "SUMMARY:Réunion café ☕ — revue trimestrielle : budget\\, feuille de route "
+        "et recrutement pour l'équipe internationale" in text
+    )
+    assert "DESCRIPTION:Line one\\, with comma\\; and semicolon\\nLine two continues here" in text
+    assert (result.removed, result.kept) == (5, 5)
+    assert _starts(pruned) == [
+        "2024-02-05T09:00:00Z",
+        "2024-02-12T09:00:00Z",
+        "2024-02-19T09:00:00Z",
+        "2024-02-26T09:00:00Z",
+        "2024-03-04T09:00:00Z",
+    ]

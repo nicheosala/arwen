@@ -1,0 +1,14 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//arwen tests//EN
+BEGIN:VEVENT
+UID:unicode-fold@arwen.test
+DTSTAMP:20231201T000000Z
+SUMMARY:Réunion café ☕ — revue trimestrielle : budget\, feuille de ro
+ ute et recrutement pour l'équipe internationale
+DESCRIPTION:Line one\, with comma\; and semicolon\nLine two continues here
+DTSTART:20240101T090000Z
+DTEND:20240101T100000Z
+RRULE:FREQ=WEEKLY;COUNT=10
+END:VEVENT
+END:VCALENDAR
