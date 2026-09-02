@@ -171,9 +171,11 @@ def test_grouping_post_condition_exactly_one_survivor_for_n_2_5_20() -> None:
 def test_three_identical_plus_two_divergent_needs_review() -> None:
     """Brief §10: 3 identical + 2 divergent must reduce to 3 survivors.
 
-    One winner from the identical sub-group (2 deleted), plus the two
-    divergent resources flagged for manual review rather than deleted or
-    silently merged — brief §6.3 step 4's conservative rule.
+    One winner from the identical sub-group survives, with the other 2
+    deleted, alongside the two divergent resources — brief §6.3 step 4's
+    mixed sub-group rule, which still deduplicates within a
+    content-identical sub-group even though the surrounding key group is
+    otherwise ambiguous.
     """
     identical = [
         _candidate("dedup_divergent_identical.ics", href=f"/cal/identical-{i}.ics")

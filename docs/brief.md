@@ -294,9 +294,12 @@ that leaves two survivors out of five copies.
    the exclusion list in the README.
 3. For each content-identical sub-group of *N* resources (any *N* ≥ 2), keep one
    winner and delete the remaining *N* − 1.
-4. **Conservative rule:** if a key group contains more than one distinct
-   content sub-group, **touch nothing in that group**. List every member as
-   "needs manual review". Two events with the same key but different
+4. **Mixed sub-group rule:** if a key group contains more than one distinct
+   content sub-group, reduce each content-identical sub-group of size ≥ 2 to
+   a single winner as in step 3, and list everything that remains — those
+   winners and every singleton — as "needs manual review". Nothing outside a
+   content-identical sub-group is ever deleted, and a group in this state
+   still yields deletions. Two events with the same key but different
    `DESCRIPTION`, `LOCATION`, `ATTENDEE`, or `VALARM` are not interchangeable,
    and deleting either loses data.
 
@@ -402,8 +405,9 @@ Required pathological cases:
 - a boundary that falls on a DST transition;
 - line folding, escaped characters, and non-ASCII summaries;
 - **5 byte-identical copies** of one event (must reduce to exactly 1);
-- **3 identical copies plus 2 divergent ones** (must reduce to 3 survivors: one
-  from the identical sub-group, plus the two divergent ones flagged for review);
+- **3 identical copies plus 2 divergent ones** (must reduce to 3 survivors — the
+  winner of the identical sub-group plus the two divergent ones — with all
+  three flagged for review and the other two identical copies deleted);
 - two events with an identical key but different `RRULE` (must not be touched).
 
 ### Layer 2 — in-process fake CalDAV server
