@@ -11,7 +11,7 @@ bare :class:`datetime.datetime` that a caller could misinterpret.
 import datetime as _dt
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NewType
 
 if TYPE_CHECKING:
     from icalendar import Calendar, Component
@@ -127,9 +127,10 @@ class Occurrence:
 class Action(Enum):
     """The per-resource action taken, or that would be taken, by a delete run.
 
-    Recorded in the report (brief §8) for every resource that classification
-    or pruning decided to act on. Kept as an enum rather than a bare string so
-    a new outcome cannot be introduced by typo (CLAUDE.md §1.1).
+    Recorded in the report (brief §8) for every resource that classification,
+    pruning, or de-duplication decided to act on. Kept as an enum rather than
+    a bare string so a new outcome cannot be introduced by typo (CLAUDE.md
+    §1.1).
     """
 
     DELETE = "delete"
@@ -137,6 +138,8 @@ class Action(Enum):
     SKIP_STRADDLING = "skip-straddling"
     SKIP_UNPRUNABLE = "skip-unprunable"
     UNTOUCHED = "untouched"
+    KEEP = "keep"
+    NEEDS_REVIEW = "needs-review"
 
 
 class PruneStrategy(Enum):
@@ -175,3 +178,71 @@ class PruneResult:
     strategy: PruneStrategy | None = None
     removed: int = 0
     kept: int = 0
+
+
+ContentHash = NewType("ContentHash", str)
+"""A SHA-256 hex digest of a resource's canonicalized, volatile-property-free content.
+
+Produced by :func:`arwen.dedup.content_hash`. A distinct type from a bare
+``str`` so a UID or an ETag can never be passed to a comparison expecting one
+(CLAUDE.md §1.1).
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateKey:
+    """The brief §6.2 duplicate key: normalized summary, start, end, all-day flag.
+
+    Two resources share a key exactly when :attr:`summary` matches
+    case-sensitively and :attr:`start`/:attr:`end` denote the same instants
+    (or the same pure dates, for an all-day event) — regardless of which
+    ``TZID`` they were originally expressed in, since :class:`Instant`
+    normalizes to UTC before comparison. :attr:`all_day` guarantees a timed
+    and an all-day event with a coincidentally matching key never match, even
+    though that already follows from :attr:`start` and :attr:`end` never
+    comparing equal across an :class:`Instant`/:class:`AllDayDate` type
+    mismatch — the brief lists it as an explicit field, so it is kept
+    explicit here too.
+    """
+
+    summary: str
+    start: EventTime
+    end: EventTime
+    all_day: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DedupCandidate:
+    """One resource considered for duplicate detection, per brief §6.
+
+    Carries only the identity a caller needs to act on a grouping decision —
+    ``href`` and ``etag``, for the ``DELETE``/``If-Match`` of brief §7 — plus
+    the parsed resource itself. :mod:`arwen.dedup` never reads ``href`` or
+    ``etag``: they are excluded from the content hash by construction, not by
+    an entry in its exclusion list.
+    """
+
+    href: str
+    etag: str
+    calendar: Calendar
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateGroup:
+    """The de-duplication outcome for one duplicate key, per brief §6.3.
+
+    A key group can contain more than one content-identical sub-group (brief
+    §6.3 step 4's "3 identical plus 2 divergent" shape), so :attr:`kept` holds
+    one winner *per* content-identical sub-group of size ≥ 2, not one winner
+    for the whole key. :attr:`needs_review` holds every member of a sub-group
+    that could not be confidently deduplicated — a sub-group of exactly one,
+    coexisting with at least one other distinct sub-group under the same key.
+    A key group with no duplication at all (a single member, or every member
+    distinct with nothing else to compare it against) produces no
+    :class:`DuplicateGroup` — there is nothing to report.
+    """
+
+    key: DuplicateKey
+    kept: tuple[DedupCandidate, ...]
+    to_delete: tuple[DedupCandidate, ...]
+    needs_review: tuple[DedupCandidate, ...]
