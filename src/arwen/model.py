@@ -131,15 +131,24 @@ class Action(Enum):
     pruning, or de-duplication decided to act on. Kept as an enum rather than
     a bare string so a new outcome cannot be introduced by typo (CLAUDE.md
     §1.1).
+
+    :attr:`CONFLICT` and :attr:`FAILED` are only ever reached in ``--execute``
+    mode: they record what the server said in reply to a mutation that the
+    plan had classified as :attr:`DELETE` or :attr:`MODIFY`. Brief §7 requires
+    both to be recorded and the run to continue, never to abort.
     """
 
     DELETE = "delete"
     MODIFY = "modify"
     SKIP_STRADDLING = "skip-straddling"
     SKIP_UNPRUNABLE = "skip-unprunable"
+    SKIP_RECURRING = "skip-recurring"
+    SKIP_NOT_EXAMINED = "skip-not-examined"
     UNTOUCHED = "untouched"
     KEEP = "keep"
     NEEDS_REVIEW = "needs-review"
+    CONFLICT = "conflict"
+    FAILED = "failed"
 
 
 class PruneStrategy(Enum):
