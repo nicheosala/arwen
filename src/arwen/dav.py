@@ -26,11 +26,22 @@ Response bodies are parsed with the standard library's
 ``xml.etree.ElementTree`` rather than ``caldav``'s own (``lxml``-backed,
 ``Any``-typed) multistatus parser, which keeps this module's public surface
 fully annotated without depending on ``lxml`` stubs.
+
+``calendar-data`` is a REPORT property (RFC 4791 §9.6), so no listing here
+assumes a ``PROPFIND`` returned one. A listing asks for it opportunistically
+and, for every resource that came back without a body, fetches it with a
+``calendar-multiget`` REPORT — or a per-resource ``GET`` where that report is
+unavailable or refused. Properties are read only from ``propstat`` elements
+whose status is 2xx, so a server naming a property it *could not* supply
+(RFC 4918 §13 permits this, as an empty element under a ``404`` propstat) is
+never mistaken for one supplying empty content.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
 from caldav.davclient import DAVClient
@@ -47,6 +58,8 @@ if TYPE_CHECKING:
 
     from arwen.config import Credentials
 
+_log = logging.getLogger(__name__)
+
 _DAV_NS = "DAV:"
 _CALDAV_NS = "urn:ietf:params:xml:ns:caldav"
 _ICAL_UTC_FORMAT = "%Y%m%dT%H%M%SZ"
@@ -57,7 +70,10 @@ _SCHEDULE_REPLY_HEADERS: dict[str, str] = {"Schedule-Reply": "F"}
 _MULTISTATUS_OK: frozenset[int] = frozenset({200, 207})
 _PUT_OK: frozenset[int] = frozenset({200, 201, 204})
 _DELETE_OK: frozenset[int] = frozenset({200, 204})
+_GET_OK = 200
 _PRECONDITION_FAILED = 412
+_SUCCESS_STATUS = range(200, 300)
+_STATUS_LINE_FIELDS = 2
 
 
 class DavError(Exception):
@@ -93,14 +109,22 @@ class Capabilities:
     """Server capabilities discovered for one collection, per brief §4.
 
     ``calendar_access`` comes from the ``DAV:`` header of an ``OPTIONS``
-    request; ``supports_calendar_query`` from that collection's
-    ``supported-report-set``, and decides whether
+    request; the two report flags from that collection's
+    ``supported-report-set``. ``supports_calendar_query`` decides whether
     :meth:`DavConnection.list_resources` can filter by ``time-range``
-    server-side or must fall back to client-side filtering.
+    server-side or must fall back to client-side filtering;
+    ``supports_calendar_multiget`` decides how it fetches the bodies of
+    resources whose listing did not carry ``calendar-data`` (RFC 4791 §7.9).
+
+    ``supports_calendar_multiget`` defaults to ``False`` so that a
+    conservatively-constructed :class:`Capabilities` never asserts a report
+    the server has not advertised; :meth:`DavConnection.discover_capabilities`
+    always sets it explicitly.
     """
 
     calendar_access: bool
     supports_calendar_query: bool
+    supports_calendar_multiget: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,10 +222,23 @@ def _require_multistatus(method: str, href: str, response: DAVResponse) -> None:
 def _parse_multistatus(xml_text: str) -> list[_XmlResponse]:
     """Parse a WebDAV multistatus body into one :class:`_XmlResponse` per ``<D:response>``.
 
-    Every ``<D:prop>`` across every ``<D:propstat>`` of a response is
-    collected into one flat, local-name-keyed dict; a property this run
-    never asked for or that the server could not supply simply never
-    appears, so callers read it with ``dict.get``.
+    Every ``<D:prop>`` of every **successful** ``<D:propstat>`` is collected
+    into one flat, local-name-keyed dict; a property this run never asked
+    for, or that the server could not supply, simply never appears, so
+    callers read it with ``dict.get``.
+
+    Honouring the per-``propstat`` status is what makes that contract true.
+    RFC 4918 §13 lets a server split one response across several
+    ``propstat`` elements, returning the properties it could supply under
+    ``200`` and naming the ones it could not under ``404`` — with the
+    unsupplied property present as an *empty element*. Flattening every
+    ``propstat`` regardless of status would make "the server sent me this
+    property" indistinguishable from "the server told me it has no such
+    property", and hand callers an empty string where they expect content.
+
+    A ``propstat`` whose status is missing or unparseable is kept: that is a
+    malformed response, and dropping its properties would turn a server bug
+    into silently missing data.
     """
     if not xml_text.strip():
         return []
@@ -212,6 +249,9 @@ def _parse_multistatus(xml_text: str) -> list[_XmlResponse]:
         href = href_el.text if href_el is not None and href_el.text else ""
         props: dict[str, ET.Element] = {}
         for propstat_el in response_el.findall(f"{{{_DAV_NS}}}propstat"):
+            status = _propstat_status(propstat_el)
+            if status is not None and status not in _SUCCESS_STATUS:
+                continue
             prop_el = propstat_el.find(f"{{{_DAV_NS}}}prop")
             if prop_el is None:
                 continue
@@ -219,6 +259,36 @@ def _parse_multistatus(xml_text: str) -> list[_XmlResponse]:
                 props[_local_name(child.tag)] = child
         responses.append(_XmlResponse(href=href, props=props))
     return responses
+
+
+def _propstat_status(propstat_el: ET.Element) -> int | None:
+    """Return the HTTP status code of a ``<D:propstat>``, or ``None`` if unreadable.
+
+    The element carries a full status line ("HTTP/1.1 404 Not Found"), of
+    which only the numeric code matters here.
+    """
+    status_el = propstat_el.find(f"{{{_DAV_NS}}}status")
+    fields = _text_of(status_el).split()
+    if len(fields) < _STATUS_LINE_FIELDS or not fields[1].isdigit():
+        return None
+    return int(fields[1])
+
+
+def _normalize_href(href: str) -> str:
+    """Reduce an href to a form two spellings of the same resource share.
+
+    Servers are free to return an absolute URL where the request used a
+    path, to percent-encode a character the client sent literally (Stalwart
+    writes a principal's ``@`` as ``%40``), and to add or omit a collection's
+    trailing slash. Comparing raw href strings across two responses is
+    therefore unsound; comparing this is not.
+    """
+    return unquote(urlsplit(href).path).rstrip("/")
+
+
+def _xml_escape(value: str) -> str:
+    """Escape the three characters that cannot appear literally in XML character data."""
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _text_of(element: ET.Element | None) -> str:
@@ -247,9 +317,9 @@ def _component_set(element: ET.Element | None) -> frozenset[str]:
     return frozenset(name for name in names if name)
 
 
-def _supports_calendar_query(element: ET.Element | None) -> bool:
-    """Report whether a ``supported-report-set`` element advertises ``calendar-query``."""
-    return element is not None and element.find(f".//{{{_CALDAV_NS}}}calendar-query") is not None
+def _supports_report(element: ET.Element | None, report: str) -> bool:
+    """Report whether a ``supported-report-set`` element advertises a given CalDAV report."""
+    return element is not None and element.find(f".//{{{_CALDAV_NS}}}{report}") is not None
 
 
 def _supports_calendar_access(response: DAVResponse) -> bool:
@@ -259,25 +329,73 @@ def _supports_calendar_access(response: DAVResponse) -> bool:
     return "calendar-access" in tokens
 
 
-def _resource_from_response(item: _XmlResponse) -> CalendarResource | None:
-    """Build a :class:`CalendarResource` from a multistatus entry, or ``None`` if it isn't one.
+def _is_collection(element: ET.Element | None) -> bool:
+    """Report whether a ``resourcetype`` element carries ``<D:collection/>``."""
+    return element is not None and element.find(f"{{{_DAV_NS}}}collection") is not None
 
-    An entry with no ``calendar-data`` is the collection's own self-entry
-    (present in a depth-1 response alongside its children), not a resource.
+
+def _parse_calendar_data(href: str, text: str) -> Calendar | None:
+    """Parse a ``calendar-data`` payload, or return ``None`` if the server sent no body.
+
+    An absent or whitespace-only payload is *not* an error: RFC 4791 §9.6
+    makes ``calendar-data`` a REPORT property, so a server answering
+    ``PROPFIND`` is free to omit it. The caller decides how to obtain the
+    body instead — it must never be handed to the parser, which rejects an
+    empty document.
 
     Raises:
-        DavError: If ``calendar-data`` is present but does not parse as a
-            single ``VCALENDAR``.
+        DavError: If a non-empty payload does not parse as one ``VCALENDAR``.
     """
-    calendar_data_element = item.props.get("calendar-data")
-    if calendar_data_element is None:
+    if not text.strip():
         return None
-    parsed = Calendar.from_ical(_text_of(calendar_data_element))
+    try:
+        parsed = Calendar.from_ical(text)
+    except ValueError as exc:
+        raise DavError(f"resource at {href} did not parse as a VCALENDAR: {exc}") from exc
     if not isinstance(parsed, Calendar):
-        raise DavError(f"resource at {item.href} did not parse as a single VCALENDAR")
-    return CalendarResource(
-        href=item.href, etag=_text_of(item.props.get("getetag")), calendar=parsed
-    )
+        raise DavError(f"resource at {href} did not parse as a single VCALENDAR")
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class _ResourceEntry:
+    """One multistatus entry naming a calendar resource, with its body if the server sent one.
+
+    ``calendar`` is ``None`` when the listing named the resource but carried
+    no ``calendar-data`` for it; :meth:`DavConnection._with_bodies` then
+    fetches the body with a report that is actually defined to return one.
+    """
+
+    href: str
+    etag: str
+    calendar: Calendar | None
+
+
+def _resource_entry(item: _XmlResponse, collection_href: str) -> _ResourceEntry | None:
+    """Build a :class:`_ResourceEntry` from a multistatus entry, or ``None`` if it isn't one.
+
+    A depth-1 listing describes the collection itself alongside its members,
+    and may describe sub-collections too; neither is a calendar resource.
+    Both are recognised structurally — by href identity with the request
+    target, and by ``resourcetype`` — rather than by the *absence* of
+    ``calendar-data``, which says nothing about what a resource is: a server
+    may legitimately answer ``PROPFIND`` without bodies, and Stalwart
+    reports the collection's own missing body as an empty ``calendar-data``
+    element under a ``404`` propstat, so absence is neither necessary nor
+    sufficient to identify a self-entry.
+
+    Raises:
+        DavError: If a non-empty ``calendar-data`` payload does not parse.
+    """
+    if _normalize_href(item.href) == _normalize_href(collection_href):
+        return None
+    if _is_collection(item.props.get("resourcetype")):
+        return None
+    etag = _text_of(item.props.get("getetag"))
+    calendar = _parse_calendar_data(item.href, _text_of(item.props.get("calendar-data")))
+    if calendar is None and not etag:
+        return None
+    return _ResourceEntry(href=item.href, etag=etag, calendar=calendar)
 
 
 def _propfind_body(props: list[str]) -> str:
@@ -310,6 +428,22 @@ def _calendar_query_body(time_range: TimeRange) -> str:
         f"<C:time-range{start_attr}{end_attr}/>"
         "</C:comp-filter></C:comp-filter></C:filter>"
         "</C:calendar-query>"
+    )
+
+
+def _calendar_multiget_body(hrefs: list[str]) -> str:
+    """Build a ``calendar-multiget`` REPORT body asking for ``hrefs``' ETags and bodies.
+
+    RFC 4791 §7.9: unlike ``PROPFIND``, this report is defined to return
+    ``calendar-data``, which is why it — not the listing — is what arwen
+    relies on for bodies a listing did not supply.
+    """
+    targets = "".join(f"<D:href>{_xml_escape(href)}</D:href>" for href in hrefs)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        f'<C:calendar-multiget xmlns:D="{_DAV_NS}" xmlns:C="{_CALDAV_NS}">'
+        "<D:prop><D:getetag/><C:calendar-data/></D:prop>"
+        f"{targets}</C:calendar-multiget>"
     )
 
 
@@ -469,7 +603,8 @@ class DavConnection:
 
         Issues an ``OPTIONS`` request and checks the ``DAV:`` header for
         ``calendar-access``, then a ``PROPFIND`` for ``supported-report-set``
-        to decide whether a server-side ``time-range`` filter is available.
+        to decide whether a server-side ``time-range`` filter is available
+        and whether bodies can be fetched with ``calendar-multiget``.
         """
         options_response = self._request("OPTIONS", href)
         calendar_access = _supports_calendar_access(options_response)
@@ -479,10 +614,12 @@ class DavConnection:
         )
         _require_multistatus("PROPFIND", href, propfind_response)
         responses = _parse_multistatus(_body(propfind_response))
-        supports_query = bool(responses) and _supports_calendar_query(
-            responses[0].props.get("supported-report-set")
+        report_set = responses[0].props.get("supported-report-set") if responses else None
+        return Capabilities(
+            calendar_access=calendar_access,
+            supports_calendar_query=_supports_report(report_set, "calendar-query"),
+            supports_calendar_multiget=_supports_report(report_set, "calendar-multiget"),
         )
-        return Capabilities(calendar_access=calendar_access, supports_calendar_query=supports_query)
 
     def list_resources(
         self,
@@ -500,42 +637,161 @@ class DavConnection:
         integration tests (brief §4).
         """
         if time_range is not None and capabilities.supports_calendar_query:
-            return self._report_calendar_query(calendar_href, time_range)
-        resources = self._propfind_resources(calendar_href)
+            return self._report_calendar_query(calendar_href, time_range, capabilities)
+        resources = self._propfind_resources(calendar_href, capabilities)
         if time_range is None:
             return resources
         return [
             resource for resource in resources if _matches_time_range(resource.calendar, time_range)
         ]
 
-    def _propfind_resources(self, calendar_href: str) -> list[CalendarResource]:
-        """List every resource of a calendar via a plain depth-1 ``PROPFIND``, unfiltered."""
+    def _propfind_resources(
+        self, calendar_href: str, capabilities: Capabilities
+    ) -> list[CalendarResource]:
+        """List every resource of a calendar via a plain depth-1 ``PROPFIND``, unfiltered.
+
+        ``calendar-data`` is asked for, because a server that answers it here
+        saves a round trip — but never assumed, because RFC 4791 §9.6 defines
+        it as a REPORT property and does not oblige ``PROPFIND`` to return
+        it. ``resourcetype`` comes along so the collection's own entry and any
+        sub-collection can be told apart from a resource structurally.
+        """
         response = self._request(
             "PROPFIND",
             calendar_href,
-            _propfind_body(["D:getetag", "C:calendar-data"]),
+            _propfind_body(["D:getetag", "D:resourcetype", "C:calendar-data"]),
             {"Depth": "1"},
         )
         _require_multistatus("PROPFIND", calendar_href, response)
-        return [
-            resource
+        entries = [
+            entry
             for item in _parse_multistatus(_body(response))
-            if (resource := _resource_from_response(item)) is not None
+            if (entry := _resource_entry(item, calendar_href)) is not None
         ]
+        return self._with_bodies(calendar_href, entries, capabilities)
 
     def _report_calendar_query(
-        self, calendar_href: str, time_range: TimeRange
+        self, calendar_href: str, time_range: TimeRange, capabilities: Capabilities
     ) -> list[CalendarResource]:
         """List a calendar's resources via a server-side ``calendar-query`` ``REPORT``."""
         response = self._request(
             "REPORT", calendar_href, _calendar_query_body(time_range), {"Depth": "1"}
         )
         _require_multistatus("REPORT", calendar_href, response)
-        return [
-            resource
+        entries = [
+            entry
             for item in _parse_multistatus(_body(response))
-            if (resource := _resource_from_response(item)) is not None
+            if (entry := _resource_entry(item, calendar_href)) is not None
         ]
+        return self._with_bodies(calendar_href, entries, capabilities)
+
+    def _with_bodies(
+        self, calendar_href: str, entries: list[_ResourceEntry], capabilities: Capabilities
+    ) -> list[CalendarResource]:
+        """Complete ``entries`` whose listing carried no ``calendar-data``, preserving order.
+
+        Raises:
+            DavError: If a resource's body could not be obtained by any route.
+        """
+        missing = [entry for entry in entries if entry.calendar is None]
+        fetched: dict[str, CalendarResource] = {}
+        if missing:
+            _log.debug(
+                "%s listed %d resource(s) without calendar-data; fetching their bodies",
+                calendar_href,
+                len(missing),
+            )
+            fetched = self._fetch_bodies(calendar_href, missing, capabilities)
+
+        resources: list[CalendarResource] = []
+        for entry in entries:
+            if entry.calendar is not None:
+                resources.append(
+                    CalendarResource(href=entry.href, etag=entry.etag, calendar=entry.calendar)
+                )
+                continue
+            resource = fetched.get(_normalize_href(entry.href))
+            if resource is None:
+                raise DavError(f"could not obtain the calendar data of {entry.href}")
+            resources.append(resource)
+        return resources
+
+    def _fetch_bodies(
+        self, calendar_href: str, entries: list[_ResourceEntry], capabilities: Capabilities
+    ) -> dict[str, CalendarResource]:
+        """Fetch the bodies of ``entries``, keyed by normalized href.
+
+        Prefers one ``calendar-multiget`` REPORT over ``len(entries)`` round
+        trips, and falls back to a per-resource ``GET`` for anything the
+        report did not advertise, refused, or silently left out.
+        """
+        fetched: dict[str, CalendarResource] = {}
+        if capabilities.supports_calendar_multiget:
+            fetched.update(self._multiget_bodies(calendar_href, entries))
+        for entry in entries:
+            key = _normalize_href(entry.href)
+            if key not in fetched:
+                fetched[key] = self._get_body(entry)
+        return fetched
+
+    def _multiget_bodies(
+        self, calendar_href: str, entries: list[_ResourceEntry]
+    ) -> dict[str, CalendarResource]:
+        """Fetch bodies with one ``calendar-multiget`` REPORT (RFC 4791 §7.9).
+
+        A server that advertised the report but then refuses it is not a
+        fatal error: an empty result simply routes every resource to the
+        per-resource ``GET`` fallback.
+        """
+        response = self._request(
+            "REPORT",
+            calendar_href,
+            _calendar_multiget_body([entry.href for entry in entries]),
+            {"Depth": "1"},
+        )
+        status: int = response.status
+        if status not in _MULTISTATUS_OK:
+            _log.debug(
+                "calendar-multiget on %s answered %d; falling back to per-resource GET",
+                calendar_href,
+                status,
+            )
+            return {}
+
+        known = {_normalize_href(entry.href): entry for entry in entries}
+        fetched: dict[str, CalendarResource] = {}
+        for item in _parse_multistatus(_body(response)):
+            calendar = _parse_calendar_data(item.href, _text_of(item.props.get("calendar-data")))
+            if calendar is None:
+                continue
+            key = _normalize_href(item.href)
+            entry = known.get(key)
+            etag = _text_of(item.props.get("getetag")) or (entry.etag if entry else "")
+            fetched[key] = CalendarResource(href=item.href, etag=etag, calendar=calendar)
+        return fetched
+
+    def _get_body(self, entry: _ResourceEntry) -> CalendarResource:
+        """Fetch one resource's body with a plain ``GET``, the last-resort fallback.
+
+        The ``ETag`` of this response supersedes the listing's when the
+        server sends one, so the body and the ``If-Match`` token a later
+        mutation will carry (brief §7) are known to describe the same
+        revision.
+
+        Raises:
+            DavRequestError: If the ``GET`` did not succeed.
+            DavError: If the response body is empty.
+        """
+        response = self._request("GET", entry.href)
+        status: int = response.status
+        if status != _GET_OK:
+            raise DavRequestError("GET", entry.href, status, response.reason)
+        calendar = _parse_calendar_data(entry.href, _body(response))
+        if calendar is None:
+            raise DavError(f"GET {entry.href} returned an empty body")
+        return CalendarResource(
+            href=entry.href, etag=_header(response, "ETag") or entry.etag, calendar=calendar
+        )
 
     def put_resource(self, href: str, calendar: Calendar, *, if_match: str) -> str:
         """Write a mutated resource back, per brief §5.4 step 5 / §7.

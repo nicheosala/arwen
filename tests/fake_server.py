@@ -5,9 +5,9 @@ suite to exercise client code without a real network connection or server:
 ``PROPFIND``-based discovery of the principal, calendar-home-set, and calendar
 collections; ``REPORT`` calendar-query with ``time-range`` filtering; and
 ``PUT`` / ``DELETE`` with real ``ETag`` and ``If-Match`` optimistic-concurrency
-semantics.
+semantics; ``calendar-multiget`` REPORT and ``GET`` for retrieving bodies.
 
-Four behaviours are configurable at construction time:
+These behaviours are configurable at construction time:
 
 - ``shuffle_seed``: when set, collections and resources are listed in a
   seeded-random order instead of insertion order, to prove that client-side
@@ -16,8 +16,16 @@ Four behaviours are configurable at construction time:
 - ``force_412_on_put``: every ``PUT`` is rejected with ``412 Precondition
   Failed`` regardless of ``If-Match``, to exercise conflict handling.
 - ``advertise_calendar_query``: when ``False``, ``supported-report-set``
-  omits ``calendar-query`` and ``REPORT`` requests are rejected with ``403``,
-  forcing callers onto the client-side PROPFIND-and-filter fallback.
+  omits ``calendar-query`` and ``calendar-query`` ``REPORT``s are rejected
+  with ``403``, forcing callers onto the client-side PROPFIND-and-filter
+  fallback.
+- ``propfind_calendar_data``: how ``PROPFIND`` answers a request for
+  ``calendar-data`` — see :class:`PropfindCalendarData`. RFC 4791 §9.6 makes
+  it a REPORT property, so a server is entitled to answer ``PROPFIND``
+  without it; the non-default modes reproduce servers that do.
+- ``advertise_calendar_multiget``: when ``False``, ``supported-report-set``
+  omits ``calendar-multiget`` and such ``REPORT``s are rejected with ``403``,
+  forcing callers onto the per-resource ``GET`` fallback.
 - Request recording is always on: every request handled is appended to
   ``FakeCalDAVServer.requests`` with method, path, headers, and body, so
   tests can assert on what was actually sent.
@@ -31,16 +39,39 @@ import hashlib
 import random
 import threading
 from dataclasses import dataclass, field
+from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
 import icalendar
 
 DAV_NS = "DAV:"
 CALDAV_NS = "urn:ietf:params:xml:ns:caldav"
+
+
+class PropfindCalendarData(StrEnum):
+    """How the fake server answers a ``PROPFIND`` asking for ``calendar-data``.
+
+    ``calendar-data`` is a REPORT property (RFC 4791 §9.6); a server need not
+    return it from ``PROPFIND`` at all. Real ones differ, and a client that
+    assumes any single behaviour is wrong against the others:
+
+    - ``INCLUDE`` — return the body inline, under a ``200`` propstat. Common,
+      convenient, and *not* guaranteed by the RFC.
+    - ``OMIT`` — leave the property out of the response entirely.
+    - ``NOT_FOUND`` — name the property as unavailable: an empty
+      ``<C:calendar-data/>`` element under a separate ``404`` propstat, per
+      RFC 4918 §13's split-propstat form. This is what Stalwart does, and it
+      is the shape that makes "absent" indistinguishable from "empty" to a
+      client that ignores propstat statuses.
+    """
+
+    INCLUDE = "include"
+    OMIT = "omit"
+    NOT_FOUND = "not-found"
 
 
 @dataclass
@@ -125,6 +156,8 @@ class FakeCalDAVServer:
         shuffle_seed: int | None = None,
         force_412_on_put: bool = False,
         advertise_calendar_query: bool = True,
+        advertise_calendar_multiget: bool = True,
+        propfind_calendar_data: PropfindCalendarData = PropfindCalendarData.INCLUDE,
     ) -> None:
         """Build a fake server. Call :meth:`start` (or use as a context manager) to serve."""
         self.collections: dict[str, FakeCollection] = {c.name: c for c in (collections or [])}
@@ -133,6 +166,8 @@ class FakeCalDAVServer:
         self.shuffle_seed = shuffle_seed
         self.force_412_on_put = force_412_on_put
         self.advertise_calendar_query = advertise_calendar_query
+        self.advertise_calendar_multiget = advertise_calendar_multiget
+        self.propfind_calendar_data = propfind_calendar_data
         self.requests: list[RecordedRequest] = []
         self._requests_lock = threading.Lock()
         self._httpd: _Server | None = None
@@ -302,6 +337,12 @@ class _Handler(BaseHTTPRequestHandler):
         self._record(body)
         _handle_report(self.fake, self, body)
 
+    def do_GET(self) -> None:
+        """Return one resource's raw iCalendar body, with its ETag."""
+        body = self._read_body()
+        self._record(body)
+        _handle_get(self.fake, self)
+
     def do_PUT(self) -> None:
         """Create or update a resource, honouring If-Match and force-412 mode."""
         body = self._read_body()
@@ -313,6 +354,21 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         self._record(body)
         _handle_delete(self.fake, self)
+
+
+def _handle_get(fake: FakeCalDAVServer, handler: _Handler) -> None:
+    path = urlsplit(handler.path).path
+    found = fake.find_resource(path)
+    if found is None:
+        handler._send_empty(HTTPStatus.NOT_FOUND)
+        return
+    _collection, resource = found
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", "text/calendar; charset=utf-8")
+    handler.send_header("ETag", resource.etag)
+    handler.send_header("Content-Length", str(len(resource.ics)))
+    handler.end_headers()
+    handler.wfile.write(resource.ics)
 
 
 def _handle_put(fake: FakeCalDAVServer, handler: _Handler, body: bytes) -> None:
@@ -391,12 +447,16 @@ def _handle_propfind(fake: FakeCalDAVServer, handler: _Handler, body: bytes) -> 
         handler._send_multistatus(responses)
         return
 
+    inline_data = fake.propfind_calendar_data is PropfindCalendarData.INCLUDE
+
     collection = fake.find_collection(path)
     if collection is not None:
         responses = [_collection_response(fake, collection, requested)]
         if depth != "0":
             responses.extend(
-                _resource_response(fake, collection, resource, requested)
+                _resource_response(
+                    fake, collection, resource, requested, with_calendar_data=inline_data
+                )
                 for resource in fake.ordered_resources(collection)
             )
         handler._send_multistatus(responses)
@@ -405,7 +465,13 @@ def _handle_propfind(fake: FakeCalDAVServer, handler: _Handler, body: bytes) -> 
     found = fake.find_resource(path)
     if found is not None:
         collection, resource = found
-        handler._send_multistatus([_resource_response(fake, collection, resource, requested)])
+        handler._send_multistatus(
+            [
+                _resource_response(
+                    fake, collection, resource, requested, with_calendar_data=inline_data
+                )
+            ]
+        )
         return
 
     handler._send_empty(HTTPStatus.NOT_FOUND)
@@ -417,25 +483,82 @@ def _handle_report(fake: FakeCalDAVServer, handler: _Handler, body: bytes) -> No
     if collection is None:
         handler._send_empty(HTTPStatus.NOT_FOUND)
         return
+
+    root = ET.fromstring(body) if body.strip() else None
+    report = _local_name(root.tag) if root is not None else "calendar-query"
+    if report == "calendar-multiget":
+        _handle_calendar_multiget(fake, handler, collection, root)
+        return
+    _handle_calendar_query(fake, handler, collection, root)
+
+
+def _handle_calendar_query(
+    fake: FakeCalDAVServer,
+    handler: _Handler,
+    collection: FakeCollection,
+    root: ET.Element | None,
+) -> None:
     if not fake.advertise_calendar_query:
         handler._send_empty(HTTPStatus.FORBIDDEN)
         return
 
-    requested: set[str] | None = None
-    time_range: _TimeRange | None = None
-    if body.strip():
-        root = ET.fromstring(body)
-        prop_el = root.find(f"{{{DAV_NS}}}prop")
-        if prop_el is not None:
-            requested = {_local_name(child.tag) for child in prop_el}
-        time_range = _extract_time_range(root)
-
+    requested = _requested_props(root)
+    time_range = _extract_time_range(root) if root is not None else None
     responses = [
         _resource_response(fake, collection, resource, requested)
         for resource in fake.ordered_resources(collection)
         if time_range is None or _resource_in_time_range(resource, time_range)
     ]
     handler._send_multistatus(responses)
+
+
+def _handle_calendar_multiget(
+    fake: FakeCalDAVServer,
+    handler: _Handler,
+    collection: FakeCollection,
+    root: ET.Element | None,
+) -> None:
+    """Answer an RFC 4791 §7.9 ``calendar-multiget``: bodies for a named set of hrefs.
+
+    Unlike ``PROPFIND``, this report is defined to return ``calendar-data``,
+    so it always does — independently of
+    :attr:`FakeCalDAVServer.propfind_calendar_data`. An href naming no
+    resource gets a ``404`` response entry, as the RFC requires.
+    """
+    if not fake.advertise_calendar_multiget:
+        handler._send_empty(HTTPStatus.FORBIDDEN)
+        return
+    if root is None:
+        handler._send_empty(HTTPStatus.BAD_REQUEST)
+        return
+
+    requested = _requested_props(root)
+    responses: list[str] = []
+    for href_el in root.findall(f"{{{DAV_NS}}}href"):
+        href = unquote(urlsplit(href_el.text or "").path)
+        found = fake.find_resource(href)
+        if found is None or found[0] is not collection:
+            responses.append(_not_found_response(href))
+            continue
+        _found_collection, resource = found
+        responses.append(_resource_response(fake, collection, resource, requested))
+    handler._send_multistatus(responses)
+
+
+def _requested_props(root: ET.Element | None) -> set[str] | None:
+    if root is None:
+        return None
+    prop_el = root.find(f"{{{DAV_NS}}}prop")
+    if prop_el is None:
+        return None
+    return {_local_name(child.tag) for child in prop_el}
+
+
+def _not_found_response(href: str) -> str:
+    return (
+        f"<D:response><D:href>{_xml_escape(href)}</D:href>"
+        "<D:status>HTTP/1.1 404 Not Found</D:status></D:response>"
+    )
 
 
 def _parse_requested_props(body: bytes) -> set[str] | None:
@@ -472,28 +595,57 @@ def _multistatus(responses: list[str]) -> bytes:
     return body.encode("utf-8")
 
 
-def _response(href: str, props_xml: list[str]) -> str:
-    props = "".join(props_xml)
-    return (
-        f"<D:response><D:href>{_xml_escape(href)}</D:href>"
-        f"<D:propstat><D:prop>{props}</D:prop>"
+def _response(href: str, props_xml: list[str], not_found_xml: list[str] | None = None) -> str:
+    """Build one ``<D:response>``, splitting supplied and unavailable properties.
+
+    RFC 4918 §13: properties the server could not supply belong in their own
+    ``propstat`` under a ``404`` status, present but empty. A ``200``
+    propstat is emitted even when empty, so a response always states what it
+    could supply.
+    """
+    propstats = (
+        f"<D:propstat><D:prop>{''.join(props_xml)}</D:prop>"
         "<D:status>HTTP/1.1 200 OK</D:status></D:propstat>"
-        "</D:response>"
     )
+    if not_found_xml:
+        propstats += (
+            f"<D:propstat><D:prop>{''.join(not_found_xml)}</D:prop>"
+            "<D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>"
+        )
+    return f"<D:response><D:href>{_xml_escape(href)}</D:href>{propstats}</D:response>"
 
 
 def _collection_response(
     fake: FakeCalDAVServer, collection: FakeCollection, requested: set[str] | None
 ) -> str:
+    """Build the response describing a collection itself.
+
+    A collection has no calendar body, so a request for ``calendar-data``
+    here is always unsatisfiable. Under
+    :attr:`PropfindCalendarData.NOT_FOUND` that is reported the way real
+    servers report it — an empty element under a ``404`` propstat — which is
+    precisely the entry a client must not hand to an iCalendar parser.
+    """
     all_props = {
         "resourcetype": _prop_resourcetype_calendar(),
         "displayname": _prop_displayname(collection.display_name),
+        "getetag": _prop_collection_ctag(collection),
         "supported-calendar-component-set": _prop_supported_calendar_component_set(
             collection.supported_components
         ),
-        "supported-report-set": _prop_supported_report_set(fake.advertise_calendar_query),
+        "supported-report-set": _prop_supported_report_set(
+            advertise_calendar_query=fake.advertise_calendar_query,
+            advertise_calendar_multiget=fake.advertise_calendar_multiget,
+        ),
     }
-    return _response(fake.collection_href(collection), _select_props(all_props, requested))
+    not_found: list[str] = []
+    if fake.propfind_calendar_data is PropfindCalendarData.NOT_FOUND and (
+        requested is None or "calendar-data" in requested
+    ):
+        not_found.append("<C:calendar-data/>")
+    return _response(
+        fake.collection_href(collection), _select_props(all_props, requested), not_found
+    )
 
 
 def _resource_response(
@@ -501,13 +653,30 @@ def _resource_response(
     collection: FakeCollection,
     resource: FakeResource,
     requested: set[str] | None,
+    *,
+    with_calendar_data: bool = True,
 ) -> str:
+    """Build the response describing one resource.
+
+    ``with_calendar_data`` is ``True`` for the reports that are *defined* to
+    return bodies (``calendar-query``, ``calendar-multiget``). ``PROPFIND``
+    passes what :attr:`FakeCalDAVServer.propfind_calendar_data` dictates,
+    since RFC 4791 §9.6 does not oblige it to return any.
+    """
     all_props = {
         "getetag": _prop_getetag(resource),
         "getcontenttype": _prop_getcontenttype(),
-        "calendar-data": _prop_calendar_data(resource),
+        "resourcetype": _prop_resourcetype_resource(),
     }
-    return _response(fake.resource_href(collection, resource), _select_props(all_props, requested))
+    not_found: list[str] = []
+    wants_data = requested is None or "calendar-data" in requested
+    if with_calendar_data:
+        all_props["calendar-data"] = _prop_calendar_data(resource)
+    elif wants_data and fake.propfind_calendar_data is PropfindCalendarData.NOT_FOUND:
+        not_found.append("<C:calendar-data/>")
+    return _response(
+        fake.resource_href(collection, resource), _select_props(all_props, requested), not_found
+    )
 
 
 def _prop_current_user_principal(fake: FakeCalDAVServer) -> str:
@@ -527,6 +696,18 @@ def _prop_resourcetype_calendar() -> str:
     return "<D:resourcetype><D:collection/><C:calendar/></D:resourcetype>"
 
 
+def _prop_resourcetype_resource() -> str:
+    return "<D:resourcetype/>"
+
+
+def _prop_collection_ctag(collection: FakeCollection) -> str:
+    """A collection-level ETag, as real servers expose alongside a collection entry."""
+    digest = hashlib.sha256(
+        b"".join(resource.etag.encode() for resource in collection.resources.values())
+    ).hexdigest()[:16]
+    return f'<D:getetag>"{digest}"</D:getetag>'
+
+
 def _prop_displayname(name: str) -> str:
     return f"<D:displayname>{_xml_escape(name)}</D:displayname>"
 
@@ -536,15 +717,18 @@ def _prop_supported_calendar_component_set(components: tuple[str, ...]) -> str:
     return f"<C:supported-calendar-component-set>{comps}</C:supported-calendar-component-set>"
 
 
-def _prop_supported_report_set(advertise_calendar_query: bool) -> str:
+def _prop_supported_report_set(
+    *, advertise_calendar_query: bool, advertise_calendar_multiget: bool
+) -> str:
     reports = ["<D:supported-report><D:report><D:sync-collection/></D:report></D:supported-report>"]
     if advertise_calendar_query:
         reports.append(
             "<D:supported-report><D:report><C:calendar-query/></D:report></D:supported-report>"
         )
-    reports.append(
-        "<D:supported-report><D:report><C:calendar-multiget/></D:report></D:supported-report>"
-    )
+    if advertise_calendar_multiget:
+        reports.append(
+            "<D:supported-report><D:report><C:calendar-multiget/></D:report></D:supported-report>"
+        )
     return f"<D:supported-report-set>{''.join(reports)}</D:supported-report-set>"
 
 

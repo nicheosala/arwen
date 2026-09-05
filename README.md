@@ -272,6 +272,15 @@ end. Where a server does not support a `calendar-query` `REPORT` with a
 `time-range` filter, `arwen` falls back to `PROPFIND` and filters
 client-side; both paths produce identical results.
 
+The same rule governs how event bodies are read. `calendar-data` is a REPORT
+property (RFC 4791 §9.6), so a server is free to answer a `PROPFIND` without
+it. `arwen` asks for it anyway — a server that supplies it saves a round trip
+— but never assumes it arrived: any resource listed without a body is
+fetched with a `calendar-multiget` `REPORT`, or a per-resource `GET` where
+that report is unavailable. Properties are read only from `propstat`
+elements whose status is 2xx, so a server that *names* a property it could
+not supply is never mistaken for one supplying empty content.
+
 ---
 
 ## Deliberate limitations

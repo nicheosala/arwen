@@ -16,13 +16,20 @@ from icalendar import Calendar
 
 from arwen.config import Credentials
 from arwen.dav import (
+    CalendarResource,
     Capabilities,
     DavConnection,
     DavRequestError,
     PreconditionFailedError,
     TimeRange,
+    _parse_multistatus,
 )
-from tests.fake_server import FakeCalDAVServer, FakeCollection, FakeResource
+from tests.fake_server import (
+    FakeCalDAVServer,
+    FakeCollection,
+    FakeResource,
+    PropfindCalendarData,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -355,3 +362,211 @@ class TestMutations:
 
         mutating = [r for r in three_event_server.requests if r.method in ("PUT", "DELETE")]
         assert mutating == []
+
+
+class TestCalendarDataFallback:
+    """Listings must not assume ``PROPFIND`` returned ``calendar-data`` (RFC 4791 §9.6).
+
+    ``calendar-data`` is a REPORT property. A server is free to answer
+    ``PROPFIND`` without it, and Stalwart does: it names the property as
+    unavailable with an empty ``<C:calendar-data/>`` under a ``404``
+    propstat, for the collection's own entry and — in
+    :attr:`~tests.fake_server.PropfindCalendarData.NOT_FOUND` — for its
+    resources too. Handing that empty string to the iCalendar parser is what
+    used to abort ``delete duplicates`` against a real server, so these
+    tests drive the listing through every shape a conforming server may
+    return.
+    """
+
+    def _server(
+        self,
+        mode: PropfindCalendarData,
+        *,
+        advertise_calendar_multiget: bool = True,
+    ) -> FakeCalDAVServer:
+        collection = FakeCollection(name="personal", display_name="Personal")
+        collection.add(FakeResource(name="a.ics", ics=_ics("uid-a", "Event A", "20250101T090000Z")))
+        collection.add(FakeResource(name="b.ics", ics=_ics("uid-b", "Event B", "20250601T090000Z")))
+        collection.add(FakeResource(name="c.ics", ics=_ics("uid-c", "Event C", "20270101T090000Z")))
+        return FakeCalDAVServer(
+            collections=[collection],
+            propfind_calendar_data=mode,
+            advertise_calendar_multiget=advertise_calendar_multiget,
+        )
+
+    def _list(self, server: FakeCalDAVServer) -> list[CalendarResource]:
+        connection = _connection(server)
+        home = connection.discover_calendar_home_set(connection.discover_principal())
+        (calendar,) = connection.list_calendars(home)
+        capabilities = connection.discover_capabilities(calendar.href)
+        return connection.list_resources(calendar.href, capabilities)
+
+    @pytest.mark.parametrize(
+        "mode",
+        [PropfindCalendarData.INCLUDE, PropfindCalendarData.OMIT, PropfindCalendarData.NOT_FOUND],
+    )
+    def test_every_resource_is_listed_with_a_usable_body(self, mode: PropfindCalendarData) -> None:
+        """Whatever PROPFIND does with calendar-data, listing yields three parsed events.
+
+        The regression test for the ``delete duplicates`` crash: under
+        ``NOT_FOUND`` the pre-fix client fed ``""`` to ``Calendar.from_ical``
+        and raised ``ValueError: Found no components where exactly one is
+        required``.
+        """
+        server = self._server(mode)
+        with server:
+            resources = self._list(server)
+
+        assert len(resources) == 3
+        summaries = {
+            str(component.get("SUMMARY"))
+            for resource in resources
+            for component in resource.calendar.walk("VEVENT")
+        }
+        assert summaries == {"Event A", "Event B", "Event C"}
+
+    @pytest.mark.parametrize("mode", [PropfindCalendarData.OMIT, PropfindCalendarData.NOT_FOUND])
+    def test_missing_bodies_are_fetched_with_calendar_multiget(
+        self, mode: PropfindCalendarData
+    ) -> None:
+        """One calendar-multiget REPORT supplies the bodies, rather than N GETs."""
+        server = self._server(mode)
+        with server:
+            self._list(server)
+
+        multigets = [
+            request
+            for request in server.requests
+            if request.method == "REPORT" and b"calendar-multiget" in request.body
+        ]
+        assert len(multigets) == 1
+        assert [r for r in server.requests if r.method == "GET"] == []
+
+    @pytest.mark.parametrize("mode", [PropfindCalendarData.OMIT, PropfindCalendarData.NOT_FOUND])
+    def test_falls_back_to_per_resource_get_without_multiget(
+        self, mode: PropfindCalendarData
+    ) -> None:
+        """A server not advertising calendar-multiget is served by per-resource GETs."""
+        server = self._server(mode, advertise_calendar_multiget=False)
+        with server:
+            resources = self._list(server)
+
+        assert len(resources) == 3
+        assert [r for r in server.requests if r.method == "REPORT"] == []
+        assert sorted(r.path for r in server.requests if r.method == "GET") == [
+            "/calendars/user/personal/a.ics",
+            "/calendars/user/personal/b.ics",
+            "/calendars/user/personal/c.ics",
+        ]
+
+    def test_no_extra_requests_when_propfind_supplied_the_bodies(self) -> None:
+        """The fallback stays dormant when the listing already carried every body."""
+        server = self._server(PropfindCalendarData.INCLUDE)
+        with server:
+            self._list(server)
+
+        assert [r for r in server.requests if r.method == "GET"] == []
+        assert [r for r in server.requests if r.method == "REPORT" and b"multiget" in r.body] == []
+
+    @pytest.mark.parametrize(
+        "mode",
+        [PropfindCalendarData.INCLUDE, PropfindCalendarData.OMIT, PropfindCalendarData.NOT_FOUND],
+    )
+    def test_the_collection_self_entry_is_never_listed_as_a_resource(
+        self, mode: PropfindCalendarData
+    ) -> None:
+        """A depth-1 listing describes the collection itself; that entry is not a resource.
+
+        Under ``NOT_FOUND`` the self-entry carries a ``getetag`` and an empty
+        ``calendar-data`` under a ``404`` propstat — indistinguishable from a
+        resource to a client that reads properties without their status.
+        """
+        server = self._server(mode)
+        with server:
+            collection = server.collections["personal"]
+            collection_href = server.collection_href(collection)
+            resources = self._list(server)
+
+        assert collection_href not in {resource.href for resource in resources}
+        assert len(resources) == 3
+
+    @pytest.mark.parametrize("mode", [PropfindCalendarData.OMIT, PropfindCalendarData.NOT_FOUND])
+    def test_listed_etags_are_valid_for_a_later_mutation(self, mode: PropfindCalendarData) -> None:
+        """A body fetched by the fallback comes back with an ETag If-Match accepts.
+
+        Guards the fallback against returning a body paired with a stale or
+        empty ETag, which would turn every mutation into a 412 (brief §7).
+        """
+        server = self._server(mode)
+        with server:
+            resources = self._list(server)
+            connection = _connection(server)
+            for resource in resources:
+                connection.delete_resource(resource.href, if_match=resource.etag)
+
+            assert server.collections["personal"].resources == {}
+
+    def test_both_listing_paths_agree_when_propfind_omits_bodies(self) -> None:
+        """Brief §4's equivalence still holds when only the REPORT path returns bodies."""
+        time_range = TimeRange(end=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC))
+        server = self._server(PropfindCalendarData.NOT_FOUND)
+        with server:
+            connection = _connection(server)
+            home = connection.discover_calendar_home_set(connection.discover_principal())
+            (calendar,) = connection.list_calendars(home)
+
+            server_side = Capabilities(
+                calendar_access=True,
+                supports_calendar_query=True,
+                supports_calendar_multiget=True,
+            )
+            client_side = Capabilities(
+                calendar_access=True,
+                supports_calendar_query=False,
+                supports_calendar_multiget=True,
+            )
+
+            server_hrefs = {
+                r.href for r in connection.list_resources(calendar.href, server_side, time_range)
+            }
+            client_hrefs = {
+                r.href for r in connection.list_resources(calendar.href, client_side, time_range)
+            }
+
+        assert server_hrefs == client_hrefs
+        assert len(server_hrefs) == 2
+
+
+class TestPropstatStatus:
+    """A property is only supplied if its own propstat succeeded (RFC 4918 §13)."""
+
+    def test_properties_of_a_non_2xx_propstat_are_not_visible(self) -> None:
+        """A property named under a 404 propstat is absent, not present-and-empty."""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            "<D:response><D:href>/c/e.ics</D:href>"
+            '<D:propstat><D:prop><D:getetag>"abc"</D:getetag></D:prop>'
+            "<D:status>HTTP/1.1 200 OK</D:status></D:propstat>"
+            "<D:propstat><D:prop><C:calendar-data/></D:prop>"
+            "<D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>"
+            "</D:response></D:multistatus>"
+        )
+
+        (item,) = _parse_multistatus(body)
+
+        assert set(item.props) == {"getetag"}
+
+    def test_a_propstat_without_a_status_is_kept(self) -> None:
+        """A malformed propstat carrying no status still yields its properties."""
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<D:multistatus xmlns:D="DAV:">'
+            "<D:response><D:href>/c/e.ics</D:href>"
+            '<D:propstat><D:prop><D:getetag>"abc"</D:getetag></D:prop></D:propstat>'
+            "</D:response></D:multistatus>"
+        )
+
+        (item,) = _parse_multistatus(body)
+
+        assert set(item.props) == {"getetag"}
