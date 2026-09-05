@@ -58,11 +58,18 @@ class _PropertyValue(Protocol):
     ``vCalAddress``, ...). This is the minimal shape :func:`_canonical_line`
     needs from any of them, checked structurally at runtime so no ``Any``
     from an unrecognised concrete type leaks into this module.
+
+    ``to_ical`` is declared as returning ``object`` because ``icalendar``
+    does not render uniformly: most classes return ``bytes``, but
+    ``vUTCOffset``, ``vGeo``, and ``vTime`` return ``str``. Promising either
+    one here would be a promise this module cannot keep, so the return value
+    is narrowed explicitly at the single call site instead
+    (:func:`_rendered_text`).
     """
 
     params: Mapping[str, object]
 
-    def to_ical(self) -> bytes:
+    def to_ical(self) -> object:
         """Render this property's value back to its RFC 5545 wire form."""
         ...
 
@@ -124,26 +131,67 @@ def duplicate_key(calendar: Calendar) -> DuplicateKey:
     )
 
 
+def _rendered_text(name: str, rendered: object) -> str:
+    """Decode one ``to_ical()`` rendering to text, whichever form ``icalendar`` returned.
+
+    Most of ``icalendar``'s value classes render to ``bytes``, but not all:
+    ``vUTCOffset`` (``TZOFFSETFROM``/``TZOFFSETTO``), ``vGeo`` (``GEO``), and
+    ``vTime`` return ``str``. Both forms describe the same RFC 5545 wire
+    text, so both must reduce to the same canonical string — a resource must
+    not hash differently for having been rendered by a class that returns one
+    rather than the other.
+
+    Raises:
+        TypeError: If a value renders to neither ``bytes`` nor ``str``.
+    """
+    if isinstance(rendered, bytes):
+        return rendered.decode("utf-8")
+    if isinstance(rendered, str):
+        return rendered
+    raise TypeError(f"{name}: to_ical() returned {type(rendered)!r}, expected bytes or str")
+
+
 def _canonical_line(name: str, value: object) -> str:
     """Render one property as a single canonical, order-normalized line.
 
     Parameters are sorted by name so two properties differing only in
-    parameter order hash identically (brief §6.3 step 2). The ``BEGIN``/``END``
-    markers ``property_items`` emits at each component boundary come through
-    as plain ``bytes`` rather than a typed property value; they are rendered
-    as-is so the hash still distinguishes structurally different resources
-    (an extra ``VALARM``, for instance) even though it ignores property order.
+    parameter order hash identically (brief §6.3 step 2).
+
+    The three branches are ordered by decreasing specificity, and the order
+    is load-bearing:
+
+    1. Raw ``bytes`` are the ``BEGIN``/``END`` markers ``property_items``
+       emits at each component boundary. They are rendered as-is, so the hash
+       still distinguishes structurally different resources (an extra
+       ``VALARM``, for instance) even though it ignores property order. No
+       ``icalendar`` value class subclasses ``bytes``, so nothing else can
+       reach this branch.
+    2. Anything satisfying :class:`_PropertyValue` is a real property value,
+       rendered with its sorted parameters. This must be tried **before** the
+       ``str`` branch below: ``vText``, ``vUri``, ``vCalAddress``,
+       ``vUnknown``, ``vFrequency``, and ``vWeekday`` all subclass ``str``,
+       and matching them as bare text would silently drop their parameters
+       from the hash and use their unescaped value — weakening the hash
+       exactly where it is meant to be strict.
+    3. A bare ``str`` is a marker or literal carrying no parameters, and is
+       rendered like the ``bytes`` case.
+
+    Raises:
+        TypeError: If a value is of none of these shapes.
     """
     if isinstance(value, bytes):
-        return f"{name.upper()}\x1f\x1f{value.decode('utf-8')}"
-    if not isinstance(value, _PropertyValue):
-        raise TypeError(f"unsupported property value for {name}: {type(value)!r}")
-    parameters = ";".join(
-        f"{str(param_name).upper()}={param_value!s}"
-        for param_name, param_value in sorted(value.params.items(), key=lambda item: str(item[0]))
-    )
-    text = value.to_ical().decode("utf-8")
-    return f"{name.upper()}\x1f{parameters}\x1f{text}"
+        return f"{name.upper()}\x1f\x1f{_rendered_text(name, value)}"
+    if isinstance(value, _PropertyValue):
+        parameters = ";".join(
+            f"{str(param_name).upper()}={param_value!s}"
+            for param_name, param_value in sorted(
+                value.params.items(), key=lambda item: str(item[0])
+            )
+        )
+        return f"{name.upper()}\x1f{parameters}\x1f{_rendered_text(name, value.to_ical())}"
+    if isinstance(value, str):
+        return f"{name.upper()}\x1f\x1f{value}"
+    raise TypeError(f"unsupported property value for {name}: {type(value)!r}")
 
 
 def content_hash(calendar: Calendar) -> ContentHash:

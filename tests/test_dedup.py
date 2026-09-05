@@ -251,3 +251,119 @@ def test_tie_break_winner_is_independent_of_input_order() -> None:
         assert _uid_of(group.kept[0]) == "aaa@arwen.test"
         assert len(group.to_delete) == 4
         assert group.needs_review == ()
+
+
+class TestContentHashValueTypes:
+    """The hash must survive every value type ``icalendar`` can hand back (brief §6.3).
+
+    ``Component.property_items`` yields whatever concrete class parsed each
+    property, and those classes do not render uniformly: most return ``bytes``
+    from ``to_ical()``, but ``vUTCOffset`` (``TZOFFSETFROM``/``TZOFFSETTO``),
+    ``vGeo`` (``GEO``) and ``vTime`` return ``str``, while the ``BEGIN``/``END``
+    component markers arrive as raw ``bytes`` with no ``to_ical()`` at all.
+    Assuming one form crashed ``delete duplicates`` on any resource carrying a
+    full ``VTIMEZONE`` — the shape Thunderbird and other exporters emit.
+
+    These fixtures are built from the wire bytes of such resources, so they
+    exercise the real classes rather than a hand-built stand-in.
+    """
+
+    def test_hashing_a_resource_with_a_vtimezone_succeeds(self) -> None:
+        """A resource carrying a full VTIMEZONE hashes rather than raising.
+
+        The regression test: ``TZOFFSETFROM:+0049`` parses to a
+        ``vUTCOffset`` whose ``to_ical()`` returns ``str``, and the previous
+        code called ``.decode()`` on it — ``AttributeError: 'str' object has
+        no attribute 'decode'``.
+        """
+        digest = content_hash(_load("dedup_value_types_vtimezone.ics"))
+
+        assert len(digest) == 64
+
+    def test_hashing_a_resource_with_geo_and_an_alarm_succeeds(self) -> None:
+        """``GEO`` (``vGeo``) also renders to ``str``, as does a ``VALARM``'s content."""
+        digest = content_hash(_load("dedup_value_types_geo_alarm.ics"))
+
+        assert len(digest) == 64
+
+    def test_str_rendered_values_still_hash_order_independently(self) -> None:
+        """Property and parameter order still do not matter once ``str`` values are in play.
+
+        The two fixtures carry the same event and the same VTIMEZONE, written
+        in a different property order and differing in every excluded
+        property (``UID``, ``SEQUENCE``, ``CREATED``, ``LAST-MODIFIED``,
+        ``DTSTAMP``, ``PRODID``).
+        """
+        assert content_hash(_load("dedup_value_types_vtimezone.ics")) == content_hash(
+            _load("dedup_value_types_vtimezone_reordered.ics")
+        )
+
+    def test_a_differing_utc_offset_still_changes_the_hash(self) -> None:
+        """Normalizing ``str`` renderings must not flatten them into each other.
+
+        The fixtures differ only in one historical ``TZOFFSETFROM``
+        (``+0049`` vs ``+0050``). A canonicalisation that dropped or
+        collapsed ``str``-rendered values would make these collide.
+        """
+        assert content_hash(_load("dedup_value_types_vtimezone.ics")) != content_hash(
+            _load("dedup_value_types_vtimezone_offset_differs.ics")
+        )
+
+    def test_a_differing_geo_still_changes_the_hash(self) -> None:
+        """The same, for ``vGeo``: two coordinates must not hash alike."""
+        assert content_hash(_load("dedup_value_types_geo_alarm.ics")) != content_hash(
+            _load("dedup_value_types_geo_differs.ics")
+        )
+
+    def test_parameters_of_str_subclassing_values_still_reach_the_hash(self) -> None:
+        """``vText`` and friends subclass ``str``; they must not be hashed as bare text.
+
+        ``LOCATION``, ``ATTENDEE``, and ``TRIGGER`` in this fixture all carry
+        parameters, and their value classes (``vText``, ``vCalAddress``)
+        subclass ``str``. If ``_canonical_line`` matched bare ``str`` before
+        the property-value protocol, those parameters would silently vanish
+        from the hash — so changing only a parameter must still change it.
+        """
+        original = (_FIXTURES_DIR / "dedup_value_types_geo_alarm.ics").read_bytes()
+        altered = original.replace(b"PARTSTAT=ACCEPTED", b"PARTSTAT=DECLINED")
+        assert altered != original
+
+        parsed = Calendar.from_ical(altered)
+        assert isinstance(parsed, Calendar)
+
+        assert content_hash(parsed) != content_hash(_load("dedup_value_types_geo_alarm.ics"))
+
+    def test_excluded_properties_are_still_excluded_with_str_values_present(self) -> None:
+        """The §6.3 exclusion list is unaffected by the value-type handling.
+
+        Rewriting every excluded property of the VTIMEZONE fixture leaves the
+        hash unchanged, exactly as it must for a resource of any other shape.
+        """
+        original = (_FIXTURES_DIR / "dedup_value_types_vtimezone.ics").read_bytes()
+        altered = (
+            original.replace(b"UID:value-types-vtimezone-1", b"UID:something-entirely-different")
+            .replace(b"SEQUENCE:0", b"SEQUENCE:41")
+            .replace(b"DTSTAMP:20250901T101500Z", b"DTSTAMP:20200101T000000Z")
+            .replace(b"CREATED:20250901T101500Z", b"CREATED:20200101T000000Z")
+            .replace(b"LAST-MODIFIED:20250901T101500Z", b"LAST-MODIFIED:20200101T000000Z")
+            .replace(b"PRODID:-//Mozilla.org/NONSGML Mozilla Calendar V1.1//EN", b"PRODID:-//X//EN")
+        )
+        assert altered != original
+
+        parsed = Calendar.from_ical(altered)
+        assert isinstance(parsed, Calendar)
+
+        assert content_hash(parsed) == content_hash(_load("dedup_value_types_vtimezone.ics"))
+
+    def test_identical_vtimezone_resources_are_grouped_as_duplicates(self) -> None:
+        """End to end: two byte-identical VTIMEZONE resources still group and de-duplicate."""
+        candidates = [
+            _candidate("dedup_value_types_vtimezone.ics", href="/cal/tz-1.ics"),
+            _candidate("dedup_value_types_vtimezone.ics", href="/cal/tz-2.ics"),
+        ]
+
+        groups = group_duplicates(candidates)
+
+        assert len(groups) == 1
+        assert len(groups[0].kept) == 1
+        assert len(groups[0].to_delete) == 1
