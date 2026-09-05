@@ -45,7 +45,18 @@ _EXCLUDED_PROPERTIES: frozenset[str] = frozenset(
 Also documented in the README as the property exclusion list (brief §11).
 ``href`` and ``ETag`` need no entry here: :func:`content_hash` never sees
 them, since it takes a parsed :class:`~icalendar.Calendar`, not a
-:class:`~arwen.model.DedupCandidate`.
+:class:`~arwen.model.DedupCandidate`. ``PRODID`` is a ``VCALENDAR``-level
+property, so it no longer falls inside the hash's scope at all; it stays
+listed because brief §6.3 step 2 names it, and because a resource is free to
+repeat it inside a component.
+"""
+
+_BLOCK_SEPARATOR = "\n\x1e\n"
+"""Separates one ``VEVENT``'s canonical block from the next.
+
+``\x1e`` (ASCII record separator) cannot occur in a canonical line, whose own
+fields are joined with ``\x1f`` and whose lines are joined with ``\n``, so no
+run of property text can forge a block boundary.
 """
 
 
@@ -194,24 +205,51 @@ def _canonical_line(name: str, value: object) -> str:
     raise TypeError(f"unsupported property value for {name}: {type(value)!r}")
 
 
-def content_hash(calendar: Calendar) -> ContentHash:
-    """Compute the brief §6.3 step 2 canonical content hash of a resource.
+def _canonical_component(component: Component) -> str:
+    """Render one ``VEVENT`` as its canonical, order-normalized block of lines.
 
-    Every property of the resource — recursing into its subcomponents, so a
-    ``VALARM`` is part of the identity a ``DESCRIPTION``, ``LOCATION``, or
-    ``ATTENDEE`` also is — is rendered as a canonical line via
-    :func:`_canonical_line`, with :data:`_EXCLUDED_PROPERTIES` dropped
-    wherever they occur. The lines are then sorted, which normalizes property
-    order (brief §6.3 step 2) and makes repeated properties (multiple
-    ``ATTENDEE``s, say) order-independent too. The result is a SHA-256 hex
-    digest of the sorted, newline-joined lines.
+    Recursion covers the component's *own* children, so a ``VALARM``'s
+    ``ACTION``, ``DESCRIPTION``, and ``TRIGGER`` are part of the event's
+    identity (brief §6.3 step 4), as are the ``BEGIN``/``END`` markers that
+    distinguish an event carrying an alarm from one that does not.
+    :data:`_EXCLUDED_PROPERTIES` are dropped wherever they occur, and the
+    lines are sorted so property order — and the order of repeated properties
+    such as several ``ATTENDEE``s — cannot change the result.
     """
     lines = sorted(
         _canonical_line(name, value)
-        for name, value in calendar.property_items(recursive=True, sorted=True)
+        for name, value in component.property_items(recursive=True, sorted=True)
         if name.upper() not in _EXCLUDED_PROPERTIES
     )
-    canonical = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def content_hash(calendar: Calendar) -> ContentHash:
+    """Compute the brief §6.3 step 2 canonical content hash of a resource.
+
+    The hash covers the resource's ``VEVENT`` components and nothing else.
+    Sibling components of the enclosing ``VCALENDAR`` — ``VTIMEZONE`` above
+    all — are deliberately excluded: a ``VTIMEZONE`` is a timezone
+    *definition* shipped alongside the event, not event content, and two
+    clients exporting the same instant emit wildly different transition
+    tables for the same ``TZID``. Thunderbird writes ``Europe/Rome`` as 49
+    ``STANDARD``/``DAYLIGHT`` subcomponents reaching back to 1893; DAVx5
+    writes the same zone as two modern rules. Hashing those would make one
+    event look like two, exactly where de-duplication is most needed — a
+    calendar synced by more than one client.
+
+    Nothing is lost by excluding them: a ``DTSTART`` or ``DTEND`` carries its
+    ``TZID`` as a *parameter*, and parameters are part of every canonical
+    line, so an event genuinely scheduled in a different zone still hashes
+    differently.
+
+    Each ``VEVENT`` is canonicalised independently by
+    :func:`_canonical_component` and the resulting blocks are sorted, so a
+    resource holding several events is order-independent across them without
+    letting one event's properties be mistaken for another's.
+    """
+    blocks = sorted(_canonical_component(event) for event in calendar.walk("VEVENT"))
+    canonical = _BLOCK_SEPARATOR.join(blocks)
     return ContentHash(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 
 

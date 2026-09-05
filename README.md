@@ -340,10 +340,27 @@ properties removed:
 | href | Not part of the calendar data at all. |
 | ETag | Same. |
 
-Everything else is part of the identity, recursively — including
-`DESCRIPTION`, `LOCATION`, every `ATTENDEE`, and any `VALARM` subcomponent.
-Property order and parameter order are normalized before hashing, so two
-files that differ only in the order they wrote things still hash the same.
+Everything else *inside the `VEVENT`* is part of the identity, recursively —
+including `DESCRIPTION`, `LOCATION`, every `ATTENDEE`, and any `VALARM`
+subcomponent. Property order and parameter order are normalized before
+hashing, so two files that differ only in the order they wrote things still
+hash the same.
+
+**A differing `VTIMEZONE` does not make two events distinct.** The hash covers
+the `VEVENT` and its own children, never the enclosing `VCALENDAR`, so the
+timezone definitions shipped alongside an event are not event content. This is
+worth knowing before it surprises you: two clients writing the same appointment
+produce resources whose bytes look nothing alike. Thunderbird exports
+`Europe/Rome` as 49 `STANDARD`/`DAYLIGHT` subcomponents with a full historical
+transition table reaching back to 1893; DAVx5 exports the same zone as two
+modern rules. One resource is 7.7 kB, the other 645 bytes, and `arwen` will
+delete one as a duplicate of the other — correctly, because the events they
+carry are identical to the byte.
+
+What still separates two events is a timezone difference in the *event*: a
+`DTSTART` or `DTEND` carries its `TZID` as a parameter, and parameters are part
+of the hash. The same wall-clock time in `Europe/Rome` and in `Europe/Helsinki`
+are two different events, and `arwen` treats them as such.
 
 **Not implemented in this version:** `backup` and `restore` commands (the
 backup *writer* exists and is used, but has no CLI surface of its own),

@@ -292,6 +292,24 @@ that leaves two survivors out of five copies.
    `DTSTAMP`, `LAST-MODIFIED`, `CREATED`, `SEQUENCE`, `PRODID`, plus href and
    ETag. Normalize property order and parameter order before hashing. Document
    the exclusion list in the README.
+
+   **Scope of "the `VEVENT`".** The hash covers each `VEVENT` component and
+   recurses into that component's *own* children — a `VALARM`'s `ACTION`,
+   `DESCRIPTION`, and `TRIGGER` are part of the event's identity, per step 4
+   below, as is the presence or absence of the alarm itself. It never
+   ascends to the enclosing `VCALENDAR`: sibling components — `VTIMEZONE`
+   above all — and calendar-level properties do not contribute. A `VTIMEZONE`
+   is a timezone *definition* shipped alongside the event, not event content,
+   and two clients exporting the same instant emit entirely different
+   transition tables for the same `TZID` (Thunderbird writes `Europe/Rome` as
+   49 `STANDARD`/`DAYLIGHT` subcomponents reaching back to 1893; DAVx5 writes
+   two modern rules). Hashing those would make one event look like two,
+   exactly on a calendar synced by more than one client — the case where
+   de-duplication matters most.
+
+   This costs nothing in strictness: a `DTSTART` or `DTEND` carries its `TZID`
+   as a **parameter**, and parameters are part of every canonical line, so an
+   event genuinely scheduled in a different zone still hashes differently.
 3. For each content-identical sub-group of *N* resources (any *N* ≥ 2), keep one
    winner and delete the remaining *N* − 1.
 4. **Mixed sub-group rule:** if a key group contains more than one distinct

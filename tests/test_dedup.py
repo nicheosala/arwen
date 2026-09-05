@@ -13,12 +13,16 @@ API, never through its private helpers, matching
 their public surface only.
 """
 
+import datetime
 import itertools
 from pathlib import Path
 
+import pytest
 from icalendar import Calendar
+from icalendar.prop import vGeo, vTime, vUTCOffset
 
 from arwen.dedup import (
+    _canonical_line,
     content_hash,
     duplicate_key,
     group_duplicates,
@@ -271,10 +275,13 @@ class TestContentHashValueTypes:
     def test_hashing_a_resource_with_a_vtimezone_succeeds(self) -> None:
         """A resource carrying a full VTIMEZONE hashes rather than raising.
 
-        The regression test: ``TZOFFSETFROM:+0049`` parses to a
-        ``vUTCOffset`` whose ``to_ical()`` returns ``str``, and the previous
-        code called ``.decode()`` on it — ``AttributeError: 'str' object has
-        no attribute 'decode'``.
+        The regression test for the ``AttributeError: 'str' object has no
+        attribute 'decode'`` crash. Since :class:`TestContentHashScope` took
+        ``VTIMEZONE`` out of the hash, this no longer reaches ``vUTCOffset``
+        through ``content_hash`` — it pins that such a resource is handled at
+        all, while
+        :meth:`test_str_rendering_value_types_canonicalise_to_their_wire_text`
+        pins the value type itself.
         """
         digest = content_hash(_load("dedup_value_types_vtimezone.ics"))
 
@@ -298,16 +305,37 @@ class TestContentHashValueTypes:
             _load("dedup_value_types_vtimezone_reordered.ics")
         )
 
-    def test_a_differing_utc_offset_still_changes_the_hash(self) -> None:
-        """Normalizing ``str`` renderings must not flatten them into each other.
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (vUTCOffset(datetime.timedelta(seconds=2940)), "+0049"),
+            (vUTCOffset(datetime.timedelta(seconds=3600)), "+0100"),
+            (vGeo((45.464211, 9.191383)), "45.464211;9.191383"),
+            (vTime(datetime.time(9, 30)), "093000"),
+        ],
+    )
+    def test_str_rendering_value_types_canonicalise_to_their_wire_text(
+        self, value: object, expected: str
+    ) -> None:
+        """``_canonical_line`` renders the ``str``-returning classes to their wire form.
 
-        The fixtures differ only in one historical ``TZOFFSETFROM``
-        (``+0049`` vs ``+0050``). A canonicalisation that dropped or
-        collapsed ``str``-rendered values would make these collide.
+        Pinned directly rather than through :func:`content_hash`, because
+        ``vUTCOffset`` only ever occurs on ``TZOFFSETFROM``/``TZOFFSETTO``
+        inside a ``VTIMEZONE`` — which :class:`TestContentHashScope` puts
+        out of the hash's scope. The value-type contract still has to hold
+        for ``vGeo``, which is event content, and for any future property
+        whose class renders to ``str``.
         """
-        assert content_hash(_load("dedup_value_types_vtimezone.ics")) != content_hash(
-            _load("dedup_value_types_vtimezone_offset_differs.ics")
-        )
+        line = _canonical_line("X-TEST", value)
+
+        assert line.endswith(f"\x1f{expected}")
+
+    def test_differing_utc_offsets_canonicalise_differently(self) -> None:
+        """Normalizing ``str`` renderings must not flatten distinct values together."""
+        one = _canonical_line("TZOFFSETFROM", vUTCOffset(datetime.timedelta(seconds=2940)))
+        other = _canonical_line("TZOFFSETFROM", vUTCOffset(datetime.timedelta(seconds=3000)))
+
+        assert one != other
 
     def test_a_differing_geo_still_changes_the_hash(self) -> None:
         """The same, for ``vGeo``: two coordinates must not hash alike."""
@@ -367,3 +395,118 @@ class TestContentHashValueTypes:
         assert len(groups) == 1
         assert len(groups[0].kept) == 1
         assert len(groups[0].to_delete) == 1
+
+
+class TestContentHashScope:
+    """The hash covers the ``VEVENT``, not the enclosing ``VCALENDAR`` (brief §6.3 step 2).
+
+    A ``VTIMEZONE`` is a timezone *definition* shipped alongside the event,
+    not event content. Two clients exporting the same instant emit wildly
+    different transition tables for the same ``TZID``: the Thunderbird
+    fixture here carries the real 49-subcomponent ``Europe/Rome`` table
+    reaching back to 1893, the DAVx5 one the same zone as two modern rules.
+    Hashing those made one event look like two — precisely on a calendar
+    synced by more than one client, where de-duplication matters most.
+
+    What must *not* follow is a weaker hash: the ``TZID`` a ``DTSTART`` or
+    ``DTEND`` carries is a parameter of the event's own property, so a
+    genuine timezone difference still separates two resources.
+    """
+
+    def test_the_same_event_hashes_equal_across_exporters(self) -> None:
+        """A byte-identical VEVENT hashes the same under either exporter's VTIMEZONE.
+
+        The regression test for the ``Collegio docenti`` false negative: the
+        two fixtures are the real shapes Thunderbird and DAVx5 wrote for one
+        event, differing in 47 ``VTIMEZONE`` subcomponents and nothing else.
+        """
+        assert content_hash(_load("dedup_tz_thunderbird.ics")) == content_hash(
+            _load("dedup_tz_davx5.ics")
+        )
+
+    def test_an_absent_vtimezone_hashes_the_same_too(self) -> None:
+        """Carrying no VTIMEZONE at all is likewise not an event-content difference."""
+        assert content_hash(_load("dedup_tz_thunderbird.ics")) == content_hash(
+            _load("dedup_tz_event_plain.ics")
+        )
+
+    def test_a_differing_tzid_on_the_event_still_separates(self) -> None:
+        """A real timezone difference is a parameter of ``DTSTART``, and still counts.
+
+        The counterweight to excluding ``VTIMEZONE``: the same wall-clock
+        time in ``Europe/Helsinki`` is a different instant, and must not
+        collide with the ``Europe/Rome`` event.
+        """
+        assert content_hash(_load("dedup_tz_event_plain.ics")) != content_hash(
+            _load("dedup_tz_event_other_tzid.ics")
+        )
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "dedup_tz_event_description.ics",
+            "dedup_tz_event_location.ics",
+            "dedup_tz_event_valarm.ics",
+        ],
+    )
+    def test_event_content_differences_still_separate(self, variant: str) -> None:
+        """``DESCRIPTION``, ``LOCATION``, and a ``VALARM`` remain event content (§6.3 step 4).
+
+        Each fixture shares the DAVx5 ``VTIMEZONE`` verbatim and differs from
+        the baseline in exactly one of these, so nothing but that property
+        can account for the hash changing.
+        """
+        assert content_hash(_load("dedup_tz_event_plain.ics")) != content_hash(_load(variant))
+
+    def test_all_event_variants_are_mutually_distinct(self) -> None:
+        """No two of the content variants collide with each other either."""
+        names = [
+            "dedup_tz_event_plain.ics",
+            "dedup_tz_event_description.ics",
+            "dedup_tz_event_location.ics",
+            "dedup_tz_event_valarm.ics",
+            "dedup_tz_event_other_tzid.ics",
+        ]
+
+        digests = {content_hash(_load(name)) for name in names}
+
+        assert len(digests) == len(names)
+
+    def test_cross_exporter_duplicates_are_now_grouped_and_deleted(self) -> None:
+        """End to end: the two exporter shapes group as duplicates, leaving one survivor.
+
+        Previously they landed in separate content sub-groups and the whole
+        key group was reported as needing manual review, deleting nothing.
+        """
+        candidates = [
+            _candidate("dedup_tz_thunderbird.ics", href="/cal/tz-thunderbird.ics"),
+            _candidate("dedup_tz_davx5.ics", href="/cal/tz-davx5.ics"),
+        ]
+
+        groups = group_duplicates(candidates)
+
+        assert len(groups) == 1
+        assert len(groups[0].kept) == 1
+        assert len(groups[0].to_delete) == 1
+        assert groups[0].needs_review == ()
+
+    def test_a_differing_vtimezone_offset_does_not_change_the_hash(self) -> None:
+        """Two exports differing only inside the VTIMEZONE are the same event.
+
+        The fixtures differ in one historical ``TZOFFSETFROM`` (``+0049`` vs
+        ``+0050``) — a transition-table detail, not a property of the event.
+        """
+        assert content_hash(_load("dedup_value_types_vtimezone.ics")) == content_hash(
+            _load("dedup_value_types_vtimezone_offset_differs.ics")
+        )
+
+    def test_a_vtimezone_only_resource_hashes_as_empty(self) -> None:
+        """A resource with no VEVENT has nothing in scope, and is never examined anyway.
+
+        :func:`is_examinable` already excludes it (brief §6.1); this pins
+        that scoping the hash to ``VEVENT`` did not turn that into a crash.
+        """
+        calendar = _load("dedup_not_examinable_vtodo.ics")
+
+        assert is_examinable(calendar) is False
+        assert len(content_hash(calendar)) == 64
