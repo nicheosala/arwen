@@ -48,13 +48,14 @@ which stage of the work is in progress.
 The gates are defined once, in `.pre-commit-config.yaml`. CI runs
 `pre-commit run --all-files`, never its own copy of the commands, so the two
 cannot drift apart. Adding a gate means adding a hook there and nowhere else.
-The build is not done until all three exit cleanly, with zero errors and zero
+The build is not done until all four exit cleanly, with zero errors and zero
 warnings:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run pyrefly check --min-severity warn
+uv run pytest
 ```
 
 - Full type annotations everywhere, including the test suite and the fake
@@ -69,6 +70,12 @@ uv run pyrefly check --min-severity warn
 - Ruff's lint `select` is the explicit, broad set defined in `pyproject.toml`
   per §1.1 — do not shrink it. New `ignore` entries need a comment justifying
   the conflict; never disable a rule just to make the gate pass.
+- `pytest` is a gate like the other three, but it runs at the `pre-push`
+  stage rather than on every commit: the suite is too slow for a commit hook.
+  CI gives it a job of its own, so nothing reaches `main` without it. Its
+  coverage threshold (`fail_under = 85`, measured with `branch = true`) lives
+  in `[tool.coverage.report]` in `pyproject.toml` — raise it as coverage
+  improves, never lower it to make the build pass.
 - `tests/fixtures/` is a byte-exact corpus. No hook, formatter, or editor
   setting may rewrite its line endings, trailing whitespace, or final newline.
 
