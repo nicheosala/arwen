@@ -37,25 +37,12 @@ dev = [
     "pytest-cov>=7.1.0",
     "pre-commit>=4.6.2",
 ]
-audit = ["uv-secure>=0.17.2,<0.18"]
 
-[tool.uv]
-# `audit` is deliberately not a default group: CI asks for it explicitly, so
-# scanning the lock file costs developers nothing on `uv sync`.
-default-groups = ["dev"]
-
-[tool.hatch.build.targets.sdist]
-include = ["src/arwen"]
-
-[tool.hatch.build.targets.wheel]
-include = ["src/arwen"]
-
-[tool.hatch.build.targets.wheel.sources]
-"src/arwen" = "arwen"
-
+# The src/ layout and a package named after the project are exactly what
+# uv_build assumes, so no build configuration of its own is needed.
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
 
 [tool.ruff]
 # target-version is intentionally absent: Ruff derives it from

@@ -10,6 +10,8 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
+# The jobs only read the code: a compromised action cannot write to the
+# repository.
 permissions:
   contents: read
 
@@ -17,73 +19,86 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  UV_FROZEN: "1"
-
 jobs:
   checks:
     name: Lint, format and types
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      # Actions are pinned to a commit SHA, not a tag: a tag can be moved by
+      # its author, a SHA cannot. Dependabot bumps the SHA and the trailing
+      # version comment together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
           cache-suffix: checks
 
+      # --locked fails if uv.lock is out of date with pyproject.toml, so the
+      # CI environment is exactly the development one.
       - name: Install Python and dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Cache the pre-commit hook environments
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      # The gates themselves live in .pre-commit-config.yaml and are never
-      # restated here, so CI and the local hooks cannot drift apart.
+      # Single source of truth: .pre-commit-config.yaml. The gates are never
+      # restated here, so CI and the local hooks cannot drift apart. No
+      # --hook-stage: pytest is a pre-push hook and belongs to the job below.
       - name: Run the pre-commit gates
-        run: uv run --frozen pre-commit run --all-files --show-diff-on-failure --color=always
+        run: uv run pre-commit run --all-files --show-diff-on-failure --color=always
 
   tests:
     name: Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
           cache-suffix: tests
 
       - name: Install Python and dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
-      # Too slow for a commit hook, so this is the one gate CI adds on top of
-      # pre-commit. The coverage threshold lives in [tool.coverage.report].
+      # Too slow for a commit hook, so it runs at pre-push locally and in its
+      # own job here. The coverage threshold lives in [tool.coverage.report].
       - name: Run the test suite
-        run: uv run --frozen pytest
+        run: uv run pytest
 
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
           cache-suffix: audit
 
-      - name: Install uv-secure
-        run: uv sync --frozen --only-group audit
-
+      # uv audit reads uv.lock directly, so there is nothing to sync and no
+      # audit dependency group to maintain. It is not a git hook: it depends
+      # on the advisory database, not on the code, so it can fail with no
+      # change on our side. That is what the weekly schedule above is for.
       - name: Scan the locked dependencies for known vulnerabilities
-        run: uv run --frozen --only-group audit uv-secure
+        run: uv audit --preview-features audit-command
