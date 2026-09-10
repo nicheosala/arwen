@@ -1,19 +1,48 @@
 version: 2
 
+# Same scheme for every ecosystem: weekly check, minor and patch bundled into
+# a single pull request, majors kept separate. They all go through CI and, if
+# it is green, merge themselves (.github/workflows/automerge.yml). Majors stay
+# apart only so it is obvious at a glance what broke what.
 updates:
-  - package-ecosystem: github-actions
-    directory: /
+  # Python dependencies — where transitive vulnerabilities come from. This
+  # also covers ruff, pyrefly, pytest and pre-commit, since the project
+  # installs them as a dependency group.
+  - package-ecosystem: "uv"
+    directory: "/"
     schedule:
-      interval: weekly
-    commit-message:
-      prefix: "ci"
-
-  - package-ecosystem: uv
-    directory: /
-    schedule:
-      interval: weekly
+      interval: "weekly"
     commit-message:
       prefix: "deps"
     groups:
-      dev-dependencies:
-        dependency-type: development
+      python:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Actions are pinned to a commit SHA in the workflows; Dependabot bumps the
+  # SHA and its version comment together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Only one `rev` is pinned in .pre-commit-config.yaml, the pre-commit-hooks
+  # repository: every other hook is `local` and runs through `uv run`, so its
+  # version comes from uv.lock and belongs to the uv ecosystem above.
+  # Dependabot skips local and meta hooks by itself.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      hooks:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

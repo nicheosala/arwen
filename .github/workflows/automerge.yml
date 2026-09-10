@@ -1,0 +1,35 @@
+name: Automerge
+
+# Triggered when CI finishes, not when the pull request opens, so the merge
+# only happens once the checks have really passed. With workflow_run the job
+# runs in the repository's own context, where the token can write; in
+# workflows started by Dependabot's pull requests it is read-only.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.pull_requests[0]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Merge the pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        # The merge can fail if another pull request landed in the meantime:
+        # Dependabot rebases its own, CI starts again and this retries by
+        # itself.
+        run: |
+          gh pr merge "$NUMBER" --squash --delete-branch --repo "$GITHUB_REPOSITORY" \
+            || echo "Merge deferred: waiting for Dependabot to update the pull request."
