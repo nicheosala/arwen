@@ -64,6 +64,12 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: uv run --frozen pre-commit run --all-files --show-diff-on-failure --color=always
 
+      # GitHub does not start workflow runs for events raised by GITHUB_TOKEN,
+      # so this pull request arrives with no CI run against it and main's
+      # required checks show as missing. That is why the gates are re-run above
+      # before it is opened. The repository owner is exempt from branch
+      # protection and can merge it directly; enforcing protection on admins
+      # too would mean giving this step a personal access token instead.
       - name: Open or update the pull request
         if: steps.changes.outputs.changed == 'true'
         env:
@@ -80,5 +86,7 @@ jobs:
             gh pr create \
               --head "$branch" \
               --title "ci: bump pinned pre-commit hook revisions" \
-              --body "Opened by \`pre-commit autoupdate\`. The gates were re-run across the whole tree on the new revisions and passed."
+              --body "Opened by \`pre-commit autoupdate\`. The gates were re-run across the whole tree on the new revisions and passed.
+
+Main's required checks will show as missing: GitHub does not start workflow runs for pull requests opened with \`GITHUB_TOKEN\`. The run that produced this branch is the verification."
           fi
