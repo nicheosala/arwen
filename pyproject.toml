@@ -14,15 +14,15 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Natural Language :: English",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Topic :: Office/Business :: Scheduling",
     "Typing :: Typed",
 ]
 dependencies = [
-    "caldav (>=3.2.1,<4.0.0)",
-    "icalendar (>=7.3.0,<8.0.0)",
-    "recurring-ical-events (>=3.8.2,<4.0.0)",
-    "python-dateutil (>=2.9.0.post0,<3.0.0)",
+    "caldav>=3.2.1",
+    "icalendar>=7.3.0",
+    "python-dateutil>=2.9.0.post0",
+    "recurring-ical-events>=3.8.2",
 ]
 
 [project.scripts]
@@ -30,12 +30,12 @@ arwen = "arwen.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1,<10",
-    "ruff>=0.16.5,<0.17",
-    "pyrefly>=1.2.0",
-    "types-python-dateutil>=2.9.0.20260807",
-    "pytest-cov>=7.1.0",
     "pre-commit>=4.6.2",
+    "pyrefly>=1.2.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.5",
+    "types-python-dateutil>=2.9.0.20260807",
 ]
 
 # The src/ layout and a package named after the project are exactly what

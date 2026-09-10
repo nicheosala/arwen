@@ -25,19 +25,19 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "caldav", specifier = ">=3.2.1,<4.0.0" },
-    { name = "icalendar", specifier = ">=7.3.0,<8.0.0" },
-    { name = "python-dateutil", specifier = ">=2.9.0.post0,<3.0.0" },
-    { name = "recurring-ical-events", specifier = ">=3.8.2,<4.0.0" },
+    { name = "caldav", specifier = ">=3.2.1" },
+    { name = "icalendar", specifier = ">=7.3.0" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
+    { name = "recurring-ical-events", specifier = ">=3.8.2" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pyrefly", specifier = ">=1.2.0" },
-    { name = "pytest", specifier = ">=9.1.1,<10" },
+    { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "ruff", specifier = ">=0.16.5,<0.17" },
+    { name = "ruff", specifier = ">=0.16.5" },
     { name = "types-python-dateutil", specifier = ">=2.9.0.20260807" },
 ]
 
