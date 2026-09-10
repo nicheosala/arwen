@@ -1,8 +1,27 @@
+# Virtual environments
 .venv/
+
+# Byte-compiled files
 __pycache__/
 *.py[cod]
+
+# Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyrefly_cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+
+# Runtime output and secrets
 backups/
 arwen.env

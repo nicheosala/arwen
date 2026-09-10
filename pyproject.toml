@@ -2,11 +2,22 @@
 name = "arwen"
 version = "0.1.0"
 description = "A command-line tool for maintaining CalDAV calendars."
-authors = [
-    { name = "Nicolò Sala", email = "me@niceo.org" },
-]
-readme = "README.md"
+authors = [{ name = "Nicolò Sala", email = "me@niceo.org" }]
 requires-python = ">=3.14,<3.15"
+readme = "README.md"
+license = "CC0-1.0"
+license-files = ["LICENSE"]
+keywords = ["caldav", "calendar", "icalendar", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Scheduling",
+    "Typing :: Typed",
+]
 dependencies = [
     "caldav (>=3.2.1,<4.0.0)",
     "icalendar (>=7.3.0,<8.0.0)",
@@ -17,20 +28,38 @@ dependencies = [
 [project.scripts]
 arwen = "arwen.cli:main"
 
-[tool.poetry]
-packages = [{ include = "arwen", from = "src" }]
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1,<10",
+    "ruff>=0.16.5,<0.17",
+    "pyrefly>=1.2.0",
+    "types-python-dateutil>=2.9.0.20260807",
+    "pytest-cov>=7.1.0",
+    "pre-commit>=4.6.2",
+]
+audit = ["uv-secure>=0.17.2,<0.18"]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^9.1.1"
-ruff = "^0.16.5"
-mypy = "^2.3.1"
+[tool.uv]
+# `audit` is deliberately not a default group: CI asks for it explicitly, so
+# scanning the lock file costs developers nothing on `uv sync`.
+default-groups = ["dev"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/arwen"]
+
+[tool.hatch.build.targets.wheel]
+include = ["src/arwen"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/arwen" = "arwen"
 
 [build-system]
-requires = ["poetry-core>=2.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
-target-version = "py314"
+# target-version is intentionally absent: Ruff derives it from
+# project.requires-python, so the version is declared in exactly one place.
 line-length = 100
 
 [tool.ruff.lint]
@@ -40,24 +69,32 @@ select = ["E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH",
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.mypy]
-strict = true
-files = ["src", "tests"]
-warn_unreachable = true
-warn_unused_ignores = true
-disallow_any_unimported = true
+[tool.pyrefly]
+preset = "strict"
+# python-version is intentionally absent: Pyrefly takes it from the
+# interpreter, which uv builds from .python-version.
+project-includes = ["src", "tests"]
+# The repository root is needed so `tests.fake_server` resolves; `src` is the
+# import root of the package itself.
+search-path = [".", "src"]
 
-[[tool.mypy.overrides]]
-module = ["icalendar.*"]
-ignore_missing_imports = true
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov",
+    "--cov-report=term-missing",
+]
 
-[[tool.mypy.overrides]]
-module = ["recurring_ical_events.*"]
-ignore_missing_imports = true
+[tool.coverage.run]
+source = ["src/arwen"]
+branch = true
 
-# python-dateutil ships no type information. Only recurrence.py touches it,
-# through dateutil.rrule, and every value that crosses back out of those calls
-# is bound to an explicitly annotated name (brief §1.1).
-[[tool.mypy.overrides]]
-module = ["dateutil.*"]
-ignore_missing_imports = true
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

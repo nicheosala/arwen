@@ -22,8 +22,9 @@ which stage of the work is in progress.
   blind retry without the ETag.
 - **No dependencies beyond `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events`**
   at runtime. Everything else comes from the standard library. `pytest`,
-  `ruff`, and `mypy` are dev dependencies only. Do not add HTTP clients, config
-  libraries, CLI frameworks, or date parsers.
+  `pytest-cov`, `ruff`, `pyrefly`, `pre-commit` and stub packages are dev
+  dependencies only. Do not add HTTP clients, config libraries, CLI
+  frameworks, or date parsers.
 - **`recurring-ical-events` is for occurrence expansion only.** All pruning and
   mutation logic — `COUNT` → `UNTIL` conversion, `DTSTART` shift, `EXDATE`
   generation, override removal, before/after comparison — is hand-written in
@@ -44,26 +45,32 @@ which stage of the work is in progress.
 
 ## §1.1 quality gates
 
+The gates are defined once, in `.pre-commit-config.yaml`. CI runs
+`pre-commit run --all-files`, never its own copy of the commands, so the two
+cannot drift apart. Adding a gate means adding a hook there and nowhere else.
 The build is not done until all three exit cleanly, with zero errors and zero
 warnings:
 
 ```bash
-poetry run ruff check .
-poetry run ruff format --check .
-poetry run mypy .
+uv run ruff check .
+uv run ruff format --check .
+uv run pyrefly check --min-severity warn
 ```
 
 - Full type annotations everywhere, including the test suite and the fake
   server — no untyped test helpers.
-- mypy runs in strict mode over `src/` and `tests/`. Third-party stub gaps in
-  `caldav`, `icalendar`, or `recurring-ical-events` are handled with narrowly
-  scoped `[[tool.mypy.overrides]]` entries naming those packages, never by
-  loosening the global config. Any surviving `# type: ignore` is narrowly coded
-  (e.g. `# type: ignore[attr-defined]`, never bare) with a one-line comment
-  explaining why.
+- Pyrefly runs with `preset = "strict"` over `src/` and `tests/`.
+  `--min-severity warn` is not optional: it is what makes a warning fail the
+  build. Third-party stub gaps are absorbed by adding the stub package as a dev
+  dependency (as `types-python-dateutil` is) or by isolating the untyped
+  surface behind the adapter layer — never by loosening the global config. Any
+  surviving suppression is narrowly coded (`# pyrefly: ignore[bad-argument-type]`,
+  never bare) with a one-line comment explaining why.
 - Ruff's lint `select` is the explicit, broad set defined in `pyproject.toml`
   per §1.1 — do not shrink it. New `ignore` entries need a comment justifying
   the conflict; never disable a rule just to make the gate pass.
+- `tests/fixtures/` is a byte-exact corpus. No hook, formatter, or editor
+  setting may rewrite its line endings, trailing whitespace, or final newline.
 
 Never loosen these gates to make code pass. Fix the code, or scope a narrow,
 justified exception.

@@ -194,10 +194,8 @@ def _canonical_line(name: str, value: object) -> str:
         return f"{name.upper()}\x1f\x1f{_rendered_text(name, value)}"
     if isinstance(value, _PropertyValue):
         parameters = ";".join(
-            f"{str(param_name).upper()}={param_value!s}"
-            for param_name, param_value in sorted(
-                value.params.items(), key=lambda item: str(item[0])
-            )
+            f"{param_name.upper()}={value.params[param_name]!s}"
+            for param_name in sorted(value.params)
         )
         return f"{name.upper()}\x1f{parameters}\x1f{_rendered_text(name, value.to_ical())}"
     if isinstance(value, str):

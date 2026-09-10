@@ -422,6 +422,7 @@ class TestPropfindDiscoveryFlow:
         assert status == 207
         root = ET.fromstring(body)
         principal_href = root.findtext(f".//{{{DAV_NS}}}current-user-principal/{{{DAV_NS}}}href")
+        assert principal_href is not None
         assert principal_href == server.principal_path
 
         status, _headers, body = _request(
@@ -430,6 +431,7 @@ class TestPropfindDiscoveryFlow:
         assert status == 207
         root = ET.fromstring(body)
         home_href = root.findtext(f".//{{{CALDAV_NS}}}calendar-home-set/{{{DAV_NS}}}href")
+        assert home_href is not None
         assert home_href == server.home_path
 
         status, _headers, body = _request(

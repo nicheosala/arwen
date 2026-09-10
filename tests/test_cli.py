@@ -362,7 +362,7 @@ class TestDeleteBeforeExecute:
             ]
         )
 
-        calendar = Calendar.from_ical(collection.resources["weekly.ics"].ics)
+        calendar = Calendar.from_ical(collection.resources["weekly.ics"].ics.decode("utf-8"))
         event = calendar.walk("VEVENT")[0]
         assert _start_datetime(event).date().isoformat() == "2025-01-06"
         rule = _rrule(event)
@@ -501,7 +501,7 @@ class TestBackup:
         )
 
         (written,) = list(backup_dir.iterdir())
-        documents = Calendar.from_ical(written.read_bytes(), multiple=True)
+        documents = Calendar.from_ical(written.read_text(encoding="utf-8-sig"), multiple=True)
         uids = {str(document.walk("VEVENT")[0]["UID"]) for document in documents}
         assert uids == {"past@arwen.test", "weekly@arwen.test"}
         for document in documents:

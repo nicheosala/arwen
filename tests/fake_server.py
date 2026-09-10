@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, override
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
@@ -276,7 +276,8 @@ class _Server(ThreadingHTTPServer):
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002, ARG002
+    @override
+    def log_message(self, format: str, *args: object) -> None:
         # Silence default request logging to stderr; tests read `requests` instead. The
         # `format`/unused-`args` signature must match BaseHTTPRequestHandler's exactly.
         return
@@ -760,7 +761,7 @@ def _parse_ical_utc(value: str) -> datetime.datetime:
 
 
 def _resource_in_time_range(resource: FakeResource, time_range: _TimeRange) -> bool:
-    calendar = icalendar.Calendar.from_ical(resource.ics)
+    calendar = icalendar.Calendar.from_ical(resource.ics.decode("utf-8"))
     for component in calendar.walk("VEVENT"):
         start = _component_start(component)
         if start is None:

@@ -28,7 +28,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from arwen.backup import BackupError, write_backup
@@ -106,6 +106,7 @@ class _RedactingFilter(logging.Filter):
         super().__init__()
         self._secret = secret
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         """Rewrite the record's message in place, then always let it through."""
         if not self._secret:

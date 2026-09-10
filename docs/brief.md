@@ -10,7 +10,7 @@ implement them.
 
 ## 1. Hard constraints
 
-- **Python 3.14**, project managed with **Poetry**, `src/` layout.
+- **Python 3.14**, project managed with **uv**, `src/` layout.
 - **Runtime dependencies: `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events`
   only.** Everything else must come from the standard library (`argparse`,
   `zoneinfo`, `hashlib`, `logging`, `datetime`, `http.server` for tests). Do not
@@ -30,37 +30,42 @@ implement them.
 
 ### 1.1 Typing and lint gates
 
-The build is not done until all three commands below exit cleanly, with **zero
+All three gates are declared once, in `.pre-commit-config.yaml`, and CI runs
+`pre-commit run --all-files` rather than restating them — the two can never
+drift apart. The build is not done until all three exit cleanly, with **zero
 errors and zero warnings**:
 
 ```bash
-poetry run ruff check .
-poetry run ruff format --check .
-poetry run mypy .
+uv run ruff check .
+uv run ruff format --check .
+uv run pyrefly check --min-severity warn
 ```
 
 **Full type annotations.** Every function, method, parameter, return value, and
 module-level constant is annotated. This includes the test suite and the fake
 server — no untyped test helpers.
 
-**mypy in strict mode**, covering `src/` and `tests/`:
+**Pyrefly in strict mode**, covering `src/` and `tests/`:
 
 ```toml
-[tool.mypy]
-strict = true
-files = ["src", "tests"]
-warn_unreachable = true
-warn_unused_ignores = true
-disallow_any_unimported = true
+[tool.pyrefly]
+preset = "strict"
+python-version = "3.14"
+project-includes = ["src", "tests"]
+search-path = [".", "src"]
 ```
+
+`pyrefly check` exits 0 on warnings by default, so the gate always passes
+`--min-severity warn`; that is what turns "zero warnings" into something the
+build enforces rather than something a reader is asked to notice.
 
 **Third-party stubs.** `caldav`, `icalendar`, `python-dateutil` and `recurring-ical-events` may
 not ship complete type information. Do not paper over this by loosening the
 global configuration and do not scatter `# type: ignore` through the codebase.
 Instead:
 
-- confine any per-module relaxation to explicit `[[tool.mypy.overrides]]`
-  entries naming those packages, and nothing else;
+- close a stub gap by adding the stub distribution as a dev dependency — as
+  `types-python-dateutil` is — never by relaxing the global configuration;
 - **isolate the untyped surface behind an adapter layer.** `dav.py` is the only
   module allowed to touch `caldav` directly, and it exposes fully typed domain
   objects to the rest of the code. `Any` must not leak into `recurrence.py`,
@@ -69,10 +74,17 @@ Instead:
   expansion function that returns a typed structure of your own. That function
   is the only place where a scoped override may apply — the pruning logic
   around it stays fully typed;
-- every `# type: ignore` that survives must be narrowly coded
-  (`# type: ignore[attr-defined]`, never bare) and carry a one-line comment
-  explaining why. `warn_unused_ignores` will catch the ones that become
-  obsolete.
+- every suppression that survives must be narrowly coded
+  (`# pyrefly: ignore[bad-argument-type]`, never bare) and carry a one-line
+  comment explaining why. Pyrefly reports the count of active suppressions on
+  every run, so an obsolete one does not stay hidden.
+
+Note that Pyrefly prefers typeshed's bundled third-party stubs over a
+package's own inline annotations, and typeshed's `icalendar` stubs lag the
+version pinned here: they declare `Component.from_ical` as taking `str` and
+returning `Component`. Pass `str` to it and narrow the result with the
+`isinstance` checks the code already needs, rather than suppressing the
+mismatch.
 
 **Ruff must be configured with an explicit, broad rule selection** — the default
 set is too small to be a meaningful gate. Start from:
@@ -371,7 +383,7 @@ Logging goes to stderr under `--verbose`. Credentials never appear in it.
 
 ## 9. Project layout
 
-Poetry with a `src/` layout, roughly:
+uv with a `src/` layout, roughly:
 
 ```
 src/arwen/
@@ -490,6 +502,6 @@ Docstrings on every public function.
 - Persisting calendar ids or hrefs between runs.
 - Interactive confirmation prompts other than calendar selection.
 - Any code path that branches on which server is on the other end.
-- Loosening the global mypy or ruff configuration to make the gates in §1.1
+- Loosening the global Pyrefly or Ruff configuration to make the gates in §1.1
   pass. Fix the code, or scope the exception to the offending third-party
   module and say why.

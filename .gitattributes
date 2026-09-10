@@ -1,0 +1,10 @@
+# Normalise line endings in the working tree to LF on every platform, so a
+# checkout on Windows cannot introduce CRLF into source or configuration.
+* text=auto eol=lf
+
+# ...except the fixture corpus, which is byte-exact. RFC 5545 folds
+# continuation lines with a leading space, and dedup_tz_thunderbird.ics
+# reproduces a real client export's mixed CRLF/LF on purpose. `-text` tells
+# git to do no conversion at all in either direction, whatever core.autocrlf
+# is set to on the machine doing the checkout.
+tests/fixtures/*.ics -text

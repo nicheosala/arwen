@@ -99,7 +99,7 @@ class TestRenderBackup:
             [_resource("/cal/a.ics", "a@arwen.test"), _resource("/cal/b.ics", "b@arwen.test")]
         )
 
-        documents = Calendar.from_ical(payload, multiple=True)
+        documents = Calendar.from_ical(payload.decode("utf-8"), multiple=True)
         assert len(documents) == 2
         assert {str(d.walk("VEVENT")[0]["UID"]) for d in documents} == {
             "a@arwen.test",
@@ -110,7 +110,7 @@ class TestRenderBackup:
         """A future restore needs to know where each document came from, and at which ETag."""
         resource = _resource("/cal/a.ics", "a@arwen.test")
 
-        (document,) = Calendar.from_ical(render_backup([resource]), multiple=True)
+        (document,) = Calendar.from_ical(render_backup([resource]).decode("utf-8"), multiple=True)
 
         assert str(document[HREF_PROPERTY]) == "/cal/a.ics"
         assert str(document[ETAG_PROPERTY]) == '"etag-a@arwen.test"'
@@ -130,7 +130,7 @@ class TestRenderBackup:
             "/cal/a.ics", "a@arwen.test", summary="Café — déjeuner", extra="X-KEEPSAKE:keep me\r\n"
         )
 
-        (document,) = Calendar.from_ical(render_backup([resource]), multiple=True)
+        (document,) = Calendar.from_ical(render_backup([resource]).decode("utf-8"), multiple=True)
 
         event = document.walk("VEVENT")[0]
         assert str(event["SUMMARY"]) == "Café — déjeuner"
@@ -186,5 +186,5 @@ class TestWriteBackup:
 
         path = write_backup(tmp_path / "backups", "Personal", resources, now=_NOW)
 
-        documents = Calendar.from_ical(path.read_bytes(), multiple=True)
+        documents = Calendar.from_ical(path.read_text(encoding="utf-8-sig"), multiple=True)
         assert [str(d[HREF_PROPERTY]) for d in documents] == [r.href for r in resources]

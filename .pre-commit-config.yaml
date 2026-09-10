@@ -1,0 +1,67 @@
+# Single source of truth for the quality gates.
+#
+# CI does not restate these commands: `.github/workflows/ci.yml` runs
+# `pre-commit run --all-files`, so the hooks below are literally the checks
+# that gate every push and pull request. Keep it that way — a check added
+# here is a check CI runs, and there is nowhere else to add one.
+#
+# Every project-specific hook runs through `uv run --frozen`, so the tool
+# versions come from `uv.lock` rather than from a second set of pinned
+# revisions that could drift away from the ones developers install.
+
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      # tests/fixtures/ is a byte-exact corpus: RFC 5545 folds continuation
+      # lines with a leading space, and at least one fixture reproduces a real
+      # client's mixed CRLF/LF export on purpose. Nothing may rewrite those
+      # bytes, or the tests stop testing what they were written to test.
+      - id: end-of-file-fixer
+        exclude: ^tests/fixtures/
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^tests/fixtures/
+      - id: trailing-whitespace
+        exclude: ^tests/fixtures/
+
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock is in sync with pyproject.toml
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: pyrefly
+        name: pyrefly check
+        # --min-severity warn makes warnings fail too: the build is not done
+        # until the type checker reports zero errors *and* zero warnings.
+        entry: uv run --frozen pyrefly check --min-severity warn
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true

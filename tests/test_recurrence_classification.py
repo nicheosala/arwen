@@ -19,7 +19,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 def _load_event(fixture_name: str) -> Component:
     """Parse the first ``VEVENT`` out of a fixture file under ``tests/fixtures/``."""
-    data = (_FIXTURES_DIR / fixture_name).read_bytes()
+    data = (_FIXTURES_DIR / fixture_name).read_text(encoding="utf-8-sig")
     calendar = Calendar.from_ical(data)
     events: list[Component] = calendar.walk("VEVENT")
     return events[0]

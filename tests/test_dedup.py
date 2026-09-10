@@ -41,7 +41,7 @@ def _load(fixture_name: str) -> Calendar:
     independent "resources" sharing one fixture's bytes (simulating several
     CalDAV resources with byte-identical content) get distinct objects.
     """
-    parsed = Calendar.from_ical((_FIXTURES_DIR / fixture_name).read_bytes())
+    parsed = Calendar.from_ical((_FIXTURES_DIR / fixture_name).read_text(encoding="utf-8-sig"))
     assert isinstance(parsed, Calendar)
     return parsed
 
@@ -356,7 +356,7 @@ class TestContentHashValueTypes:
         altered = original.replace(b"PARTSTAT=ACCEPTED", b"PARTSTAT=DECLINED")
         assert altered != original
 
-        parsed = Calendar.from_ical(altered)
+        parsed = Calendar.from_ical(altered.decode("utf-8"))
         assert isinstance(parsed, Calendar)
 
         assert content_hash(parsed) != content_hash(_load("dedup_value_types_geo_alarm.ics"))
@@ -378,7 +378,7 @@ class TestContentHashValueTypes:
         )
         assert altered != original
 
-        parsed = Calendar.from_ical(altered)
+        parsed = Calendar.from_ical(altered.decode("utf-8"))
         assert isinstance(parsed, Calendar)
 
         assert content_hash(parsed) == content_hash(_load("dedup_value_types_vtimezone.ics"))

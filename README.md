@@ -1,5 +1,9 @@
 # arwen
 
+[![CI](https://github.com/nicheosala/arwen/actions/workflows/ci.yml/badge.svg)](https://github.com/nicheosala/arwen/actions/workflows/ci.yml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/)
+[![License: CC0-1.0](https://img.shields.io/badge/license-CC0--1.0-lightgrey.svg)](LICENSE)
+
 A command-line tool for maintaining CalDAV calendars.
 
 `arwen` removes what a calendar no longer needs — events that are already
@@ -12,18 +16,21 @@ it touches any of it, and it never sends a scheduling message to anyone.
 
 ## Installation
 
-Requires **Python 3.14** and [Poetry](https://python-poetry.org/).
+Requires **Python 3.14** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone <this repository>
+git clone https://github.com/nicheosala/arwen.git
 cd arwen
-poetry install
+uv sync
 ```
 
-That gives you the `arwen` command inside the project environment:
+`uv sync` installs the pinned Python 3.14 interpreter from `.python-version`
+and every dependency from `uv.lock`, so the environment is identical to the
+one CI uses. That gives you the `arwen` command inside the project
+environment:
 
 ```bash
-poetry run arwen delete before 2025-01-01
+uv run arwen delete before 2025-01-01
 ```
 
 Runtime dependencies are `caldav`, `icalendar`, `python-dateutil` and
@@ -45,7 +52,8 @@ ARWEN_CALDAV_PASSWORD="a value may be quoted"
 ```
 
 All three keys are required. Values may be wrapped in one layer of matching
-single or double quotes, which is stripped.
+single or double quotes, which is stripped. `arwen.env.example` is a template
+to copy; `arwen.env` itself is gitignored.
 
 **The password is never accepted on the command line.** There is no
 `--password` option, so it never appears in `argv`, in your shell history, or
@@ -101,8 +109,8 @@ no time component is accepted. The interval is exclusive on the right:
 everything strictly before `DATE` at 00:00:00 in the resolved timezone.
 
 ```bash
-poetry run arwen delete before 2025-01-01 --calendar Personal --tz Europe/Rome
-poetry run arwen delete before 2025-01-01 --calendar Personal --tz Europe/Rome --execute
+uv run arwen delete before 2025-01-01 --calendar Personal --tz Europe/Rome
+uv run arwen delete before 2025-01-01 --calendar Personal --tz Europe/Rome --execute
 ```
 
 **The timezone matters, and is always printed.** UTC is deliberately not the
@@ -143,8 +151,8 @@ never written.**
 Removes redundant copies of the same event across the whole collection.
 
 ```bash
-poetry run arwen delete duplicates --calendar Personal
-poetry run arwen delete duplicates --calendar Personal --execute
+uv run arwen delete duplicates --calendar Personal
+uv run arwen delete duplicates --calendar Personal --execute
 ```
 
 Two events are candidates for de-duplication when they share a key of
@@ -371,20 +379,58 @@ of `delete before`.
 
 ## Development
 
-The build is not done until all three of these exit cleanly, with zero errors
-and zero warnings:
+Every gate is defined once, in `.pre-commit-config.yaml`, and run the same way
+locally and in CI. Install the hooks once:
 
 ```bash
-poetry run ruff check .
-poetry run ruff format --check .
-poetry run mypy .
+uv run pre-commit install
 ```
 
-The test suite runs offline, with no credentials and no network:
+From then on each commit runs the gates on what you changed. To run them
+across the whole tree — exactly what `.github/workflows/ci.yml` does:
 
 ```bash
-poetry run pytest
+uv run pre-commit run --all-files
 ```
+
+The gates are Ruff's linter, Ruff's formatter, and Pyrefly, and the build is
+not done until all three report zero errors *and* zero warnings. They can also
+be run one at a time:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run pyrefly check --min-severity warn
+```
+
+The Python version is declared in two files and derived everywhere else:
+`.python-version` says which interpreter uv installs, and `requires-python` in
+`pyproject.toml` says which versions the project supports. Ruff reads its
+target from the latter and Pyrefly reads its own from the interpreter, so
+neither carries a copy that could fall out of step.
+
+The test suite is the one check CI adds on top of the hooks, because it is too
+slow for a commit hook. It runs offline, with no credentials and no network,
+and reports coverage against the threshold in `[tool.coverage.report]`:
+
+```bash
+uv run pytest
+```
+
+Dependency updates are Dependabot's job: it watches the GitHub Actions used by
+the workflows and every entry in `uv.lock`, including the dev tools and the
+`uv-secure` scanner that the `audit` job runs. The one pin it cannot see is the
+`pre-commit-hooks` revision in `.pre-commit-config.yaml`, because Dependabot
+has no pre-commit ecosystem; `.github/workflows/update-hooks.yml` bumps that
+one weekly and opens a pull request. To scan the lock file yourself:
+
+```bash
+uv run --frozen --only-group audit uv-secure
+```
+
+The test corpus in `tests/fixtures/` is byte-exact and `.gitattributes` marks
+it `-text`, so no checkout rewrites its line endings whatever `core.autocrlf`
+is set to locally.
 
 It has two layers: unit tests over the pure pruning and de-duplication
 functions against a fixture corpus in `tests/fixtures/`, and integration tests
@@ -392,3 +438,10 @@ against an in-process fake CalDAV server (`tests/fake_server.py`) that
 implements real ETag and `If-Match` semantics and records every request it
 receives. Assertions live on the resulting iCalendar data and on those
 recorded requests — never on internal call counts.
+
+---
+
+## License
+
+Released into the public domain under [CC0 1.0 Universal](LICENSE). No rights
+reserved: use it, change it, ship it, no attribution required.

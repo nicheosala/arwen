@@ -37,6 +37,13 @@ if TYPE_CHECKING:
 _ICAL_UTC_FORMAT = "%Y%m%dT%H%M%SZ"
 
 
+def _parse_ics(ics: bytes) -> Calendar:
+    """Parse a fake resource's stored bytes into a :class:`icalendar.Calendar`."""
+    calendar = Calendar.from_ical(ics.decode("utf-8"))
+    assert isinstance(calendar, Calendar)
+    return calendar
+
+
 def _ics(uid: str, summary: str, dtstart: str, duration_hours: int = 1) -> bytes:
     """Build a minimal single-``VEVENT`` ``.ics`` document."""
     start = datetime.datetime.strptime(dtstart, _ICAL_UTC_FORMAT).replace(tzinfo=datetime.UTC)
@@ -274,7 +281,7 @@ class TestMutations:
             connection = _connection(server)
             href = server.resource_href(collection, resource)
             original_etag = resource.etag
-            calendar = Calendar.from_ical(resource.ics)
+            calendar = _parse_ics(resource.ics)
             calendar.walk("VEVENT")[0]["SUMMARY"] = "Updated"
 
             new_etag = connection.put_resource(href, calendar, if_match=original_etag)
@@ -289,7 +296,7 @@ class TestMutations:
         with server:
             connection = _connection(server)
             href = server.resource_href(collection, resource)
-            calendar = Calendar.from_ical(resource.ics)
+            calendar = _parse_ics(resource.ics)
 
             etag = connection.put_resource(href, calendar, if_match=resource.etag)
             connection.delete_resource(href, if_match=etag)
@@ -306,7 +313,7 @@ class TestMutations:
         with server:
             connection = _connection(server)
             href = server.resource_href(collection, resource)
-            calendar = Calendar.from_ical(resource.ics)
+            calendar = _parse_ics(resource.ics)
             original_content = resource.ics
 
             with pytest.raises(PreconditionFailedError):
@@ -323,7 +330,7 @@ class TestMutations:
         with server:
             connection = _connection(server)
             href = server.resource_href(collection, resource)
-            calendar = Calendar.from_ical(resource.ics)
+            calendar = _parse_ics(resource.ics)
 
             with pytest.raises(PreconditionFailedError):
                 connection.put_resource(href, calendar, if_match=resource.etag)

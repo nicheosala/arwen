@@ -8,7 +8,7 @@ non-TTY usage-error path, and the numbered interactive picker itself.
 """
 
 import io
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 
@@ -37,6 +37,7 @@ _MINIMAL_ICS = (
 class _FakeTTY(io.StringIO):
     """A ``StringIO`` that reports itself as a TTY, for exercising the interactive path."""
 
+    @override
     def isatty(self) -> bool:
         """Report as connected to a terminal, unlike a plain ``StringIO``."""
         return True

@@ -240,7 +240,7 @@ def _copy_calendar(calendar: Calendar) -> Calendar:
     know what they are, and produces exactly the byte shape a later ``PUT``
     would send.
     """
-    copied = Calendar.from_ical(calendar.to_ical())
+    copied = Calendar.from_ical(calendar.to_ical().decode("utf-8"))
     if not isinstance(copied, Calendar):
         raise _UnprunableError("resource does not parse back as a single VCALENDAR")
     return copied
@@ -328,9 +328,7 @@ def _recur_properties(component: Component) -> list[vRecur]:
 
 def _rule_text(rule: vRecur) -> str:
     """Render an ``RRULE`` back to its RFC 5545 value form, ready for ``dateutil``."""
-    # icalendar ships py.typed but leaves vRecur.to_ical unannotated; the call
-    # is safe and returns bytes, so the ignore is scoped to this one wrapper.
-    return str(rule.to_ical().decode("utf-8"))  # type: ignore[no-untyped-call]
+    return rule.to_ical().decode("utf-8")
 
 
 def _date_list_properties(component: Component, name: str) -> list[vDDDLists]:
@@ -383,7 +381,11 @@ def _nominal_duration(component: Component, start: date | datetime) -> timedelta
     """
     end = _read_date_or_datetime(component, "DTEND")
     if end is not None:
-        if isinstance(end, datetime) != isinstance(start, datetime):
+        if isinstance(start, datetime):
+            if not isinstance(end, datetime):
+                raise _UnprunableError("DTSTART and DTEND have different value types")
+            return end - start
+        if isinstance(end, datetime):
             raise _UnprunableError("DTSTART and DTEND have different value types")
         return end - start
     duration = _read_duration(component)
@@ -459,7 +461,7 @@ def _convert_count_to_until(component: Component, start: date | datetime) -> Non
         counts = rule.get("COUNT")
         if not counts:
             continue
-        count = int(counts[0])
+        count = int(next(iter(counts)))
         last: datetime | None = None
         for index, value in enumerate(rrulestr(_rule_text(rule), dtstart=first)):
             last = value
@@ -522,8 +524,12 @@ def _add_exdates(component: Component, values: list[date | datetime], zone: tzin
     """
     if not values:
         return
+
+    def sort_key(value: date | datetime) -> datetime:
+        return _instant_key(value, zone)
+
     groups: dict[str, list[date | datetime]] = {}
-    for value in sorted(values, key=lambda v: _instant_key(v, zone)):
+    for value in sorted(values, key=sort_key):
         tag = str(value.tzinfo) if isinstance(value, datetime) and value.tzinfo else ""
         groups.setdefault(tag, []).append(value)
 

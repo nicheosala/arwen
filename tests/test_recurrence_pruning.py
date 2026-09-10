@@ -43,7 +43,7 @@ _WINDOW_END = datetime(2027, 1, 1, tzinfo=UTC)
 
 def _load(fixture_name: str) -> Calendar:
     """Parse a fixture under ``tests/fixtures/`` into a :class:`icalendar.Calendar`."""
-    parsed = Calendar.from_ical((_FIXTURES_DIR / fixture_name).read_bytes())
+    parsed = Calendar.from_ical((_FIXTURES_DIR / fixture_name).read_text(encoding="utf-8-sig"))
     assert isinstance(parsed, Calendar)
     return parsed
 
