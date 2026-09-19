@@ -394,13 +394,6 @@ def _nominal_duration(component: Component, start: date | datetime) -> timedelta
     return timedelta(0) if isinstance(start, datetime) else timedelta(days=1)
 
 
-def _horizon_for(start: date | datetime, horizon: date) -> date | datetime:
-    """Express the validation horizon in the same flavour as ``start``."""
-    if isinstance(start, datetime):
-        return datetime.combine(horizon, time.min, tzinfo=start.tzinfo)
-    return horizon
-
-
 def _rule_instants(
     component: Component, start: date | datetime, horizon: date
 ) -> list[date | datetime]:
@@ -415,8 +408,11 @@ def _rule_instants(
         return []
 
     all_day = not isinstance(start, datetime)
-    first = datetime.combine(start, time.min) if all_day else start
-    last = _horizon_for(first, horizon)
+    # The ``isinstance`` test, rather than ``all_day``, is what narrows the
+    # type here: ``rrule`` works in date-times only, and so must the horizon
+    # it is compared against.
+    first = start if isinstance(start, datetime) else datetime.combine(start, time.min)
+    last = datetime.combine(horizon, time.min, tzinfo=first.tzinfo)
 
     instants: list[date | datetime] = []
     for rule in rules:
