@@ -240,7 +240,7 @@ def _copy_calendar(calendar: Calendar) -> Calendar:
     know what they are, and produces exactly the byte shape a later ``PUT``
     would send.
     """
-    copied = Calendar.from_ical(calendar.to_ical().decode("utf-8"))
+    copied = Calendar.from_ical(calendar.to_ical())
     if not isinstance(copied, Calendar):
         raise _UnprunableError("resource does not parse back as a single VCALENDAR")
     return copied

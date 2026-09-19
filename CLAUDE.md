@@ -4,6 +4,10 @@ Full spec: **`docs/brief.md`**. Read it before making any design decision —
 this file only restates the invariants that must never be violated, no matter
 which stage of the work is in progress.
 
+**`docs/traceability.md`** maps every requirement in the brief to the test that
+proves it, and lists the ones nothing would catch. A new requirement gets a row
+there before it gets an implementation; a row that says *unproven* is a to-do.
+
 ## Non-negotiable invariants
 
 - **Dry-run by default.** Nothing is ever written to the server unless
@@ -73,7 +77,7 @@ uv run pytest
 - `pytest` is a gate like the other three, but it runs at the `pre-push`
   stage rather than on every commit: the suite is too slow for a commit hook.
   CI gives it a job of its own, so nothing reaches `main` without it. Its
-  coverage threshold (`fail_under = 85`, measured with `branch = true`) lives
+  coverage threshold (`fail_under = 87`, measured with `branch = true`) lives
   in `[tool.coverage.report]` in `pyproject.toml` — raise it as coverage
   improves, never lower it to make the build pass.
 - `tests/fixtures/` is a byte-exact corpus. No hook, formatter, or editor

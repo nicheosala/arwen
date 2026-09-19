@@ -21,7 +21,9 @@ _log = logging.getLogger(__name__)
 
 _URL_KEY = "ARWEN_CALDAV_URL"
 _USERNAME_KEY = "ARWEN_CALDAV_USERNAME"
-_PASSWORD_KEY = "ARWEN_CALDAV_PASSWORD"
+# S105 below: this is the *name* of the variable that carries the password,
+# not a password. The value never leaves this module.
+_PASSWORD_KEY = "ARWEN_CALDAV_PASSWORD"  # noqa: S105
 _REQUIRED_KEYS = (_URL_KEY, _USERNAME_KEY, _PASSWORD_KEY)
 
 

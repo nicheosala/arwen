@@ -242,7 +242,15 @@ def _parse_multistatus(xml_text: str) -> list[_XmlResponse]:
     """
     if not xml_text.strip():
         return []
-    root = ET.fromstring(xml_text)
+    # S314: `defusedxml` would be the textbook answer, but a fifth runtime
+    # dependency is not on the table. What is left of the attack it guards
+    # against, on Python 3.14's ElementTree, is entity expansion — and the
+    # response this parses came over an authenticated TLS connection to a
+    # server the user chose and handed their password to. A server able to
+    # mount it is already able to hand back whatever calendar data it likes.
+    # The unbounded response body is the real exposure here and is tracked
+    # separately; it is a resource limit, not an XML question.
+    root = ET.fromstring(xml_text)  # noqa: S314
     responses: list[_XmlResponse] = []
     for response_el in root.findall(f"{{{_DAV_NS}}}response"):
         href_el = response_el.find(f"{{{_DAV_NS}}}href")

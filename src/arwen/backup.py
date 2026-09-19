@@ -89,7 +89,7 @@ def _annotated_copy(resource: CalendarResource) -> Calendar:
         BackupError: If the resource does not serialize back to a single
             ``VCALENDAR``.
     """
-    copied = Calendar.from_ical(resource.calendar.to_ical().decode("utf-8"))
+    copied = Calendar.from_ical(resource.calendar.to_ical())
     if not isinstance(copied, Calendar):
         raise BackupError(f"{resource.href} does not serialize back as a single VCALENDAR")
     copied[HREF_PROPERTY] = resource.href

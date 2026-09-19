@@ -38,32 +38,32 @@ dev = [
     "types-python-dateutil>=2.9.0.20260807",
 ]
 
-# The src/ layout and a package named after the project are exactly what
-# uv_build assumes, so no build configuration of its own is needed.
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
 
 [tool.ruff]
-# target-version is intentionally absent: Ruff derives it from
-# project.requires-python, so the version is declared in exactly one place.
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "PTH",
-          "RET", "ARG", "TC", "ANN", "D", "RUF"]
+          "RET", "ARG", "TC", "ANN", "D", "RUF", "S", "DTZ", "C90"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"tests/fake_server.py" = ["S311", "S314"]
+"tests/test_fake_server.py" = ["S314"]
+"tests/test_config.py" = ["S105", "S106"]
+"tests/test_dav.py" = ["S106"]
+"tests/test_discovery.py" = ["S106"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.pyrefly]
 preset = "strict"
-# python-version is intentionally absent: Pyrefly takes it from the
-# interpreter, which uv builds from .python-version.
 project-includes = ["src", "tests"]
-# The repository root is needed so `tests.fake_server` resolves; `src` is the
-# import root of the package itself.
-search-path = [".", "src"]
+search-path = [".", "src", ".venv/lib/python3.14/site-packages"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -80,7 +80,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 85
+fail_under = 87
 exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",

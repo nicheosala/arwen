@@ -14,9 +14,12 @@ untouched, a ``412`` is a recorded conflict rather than a fatal error — and
 the exit codes.
 """
 
+import argparse
 import json
+import logging
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
+from zoneinfo import ZoneInfo
 
 import pytest
 from icalendar import Calendar
@@ -26,9 +29,13 @@ from arwen.backup import ETAG_PROPERTY, HREF_PROPERTY
 from arwen.cli import (
     EXIT_CONNECTION,
     EXIT_FINDINGS,
+    EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_USAGE,
+    _build_parser,
+    _configure_logging,
     main,
+    resolve_timezone,
 )
 from tests.fake_server import FakeCalDAVServer, FakeCollection, FakeResource
 
@@ -670,28 +677,6 @@ class TestReportShape:
         assert "2024-01-01T09:00:00+00:00" in output
         assert "Weekly stand-up" in output
 
-    def test_the_password_never_appears_in_verbose_output(
-        self,
-        past_present_future: FakeCalDAVServer,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Brief §3: the password is redacted from logs, including verbose HTTP ones."""
-        env_file = _write_env(tmp_path, past_present_future)
-
-        main(
-            [
-                "delete",
-                "before",
-                "2025-01-01",
-                *_argv(env_file, tmp_path / "backups", "--verbose", "--tz", "UTC"),
-            ]
-        )
-
-        captured = capsys.readouterr()
-        assert "s3cret" not in captured.out
-        assert "s3cret" not in captured.err
-
 
 class TestExitCodes:
     """Brief §7's exit codes, exercised through :func:`arwen.cli.main`."""
@@ -804,3 +789,299 @@ class TestExitCodes:
         code = main(["delete", "duplicates", *_argv(env_file, tmp_path / "backups")])
 
         assert code == EXIT_CONNECTION
+
+
+class TestPasswordRedaction:
+    """Brief §3: the password never reaches the log output, whichever logger emitted it.
+
+    The end-to-end test below only proves that *arwen's own* report does not
+    leak the password. The rest go through :func:`arwen.cli._configure_logging`
+    directly, because the leak brief §3 cares about — "verbose HTTP logs" — is
+    emitted by ``caldav`` and ``urllib3``, which the fake server never
+    exercises: it is called in-process and no HTTP client library ever logs.
+    """
+
+    def test_the_password_never_appears_in_verbose_output(
+        self,
+        past_present_future: FakeCalDAVServer,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A whole verbose run prints the password nowhere."""
+        env_file = _write_env(tmp_path, past_present_future)
+
+        main(
+            [
+                "delete",
+                "before",
+                "2025-01-01",
+                *_argv(env_file, tmp_path / "backups", "--verbose", "--tz", "UTC"),
+            ]
+        )
+
+        captured = capsys.readouterr()
+        assert "s3cret" not in captured.out
+        assert "s3cret" not in captured.err
+
+    def test_records_from_a_third_party_logger_are_redacted(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The verbose HTTP logging brief §3 names is emitted by libraries, not by arwen.
+
+        ``urllib3`` logs the wire bytes of every request at debug level, which
+        under ``--verbose`` includes the ``Authorization`` header.
+        """
+        redaction = _configure_logging(verbose=True)
+        redaction.redact("s3cret")
+
+        logging.getLogger("urllib3.connectionpool").debug(
+            "send: %r", b"PROPFIND / HTTP/1.1\r\nAuthorization: Basic user:s3cret"
+        )
+
+        captured = capsys.readouterr()
+        assert "s3cret" not in captured.err
+        assert "***" in captured.err
+
+    def test_records_from_arwens_own_modules_are_redacted(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Every module here logs through a child of ``arwen``, never through the root."""
+        redaction = _configure_logging(verbose=True)
+        redaction.redact("s3cret")
+
+        logging.getLogger("arwen.dav").warning(
+            "PUT %s answered 401", "https://user:s3cret@dav.arwen.test/c/1.ics"
+        )
+
+        captured = capsys.readouterr()
+        assert "s3cret" not in captured.err
+        assert "***" in captured.err
+
+    def test_exception_messages_are_redacted(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Brief §3 names exception messages explicitly, so the traceback counts too."""
+        redaction = _configure_logging(verbose=True)
+        redaction.redact("s3cret")
+
+        try:
+            raise RuntimeError("authentication failed for user:s3cret")
+        except RuntimeError:
+            logging.getLogger("arwen.dav").exception("the request failed")
+
+        captured = capsys.readouterr()
+        assert "s3cret" not in captured.err
+        assert "***" in captured.err
+
+
+def _option_strings(parser: argparse.ArgumentParser) -> Iterator[str]:
+    """Yield every option string ``parser`` accepts, descending into its subparsers."""
+    for action in parser._actions:
+        yield from action.option_strings
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                yield from _option_strings(subparser)
+
+
+class TestCommandSurface:
+    """Brief §2's option set, and the one option brief §3 forbids ever existing."""
+
+    def test_no_parser_anywhere_offers_a_password_option(self) -> None:
+        """Brief §3: the password must never appear in ``argv``, so no flag may carry it."""
+        offered = list(_option_strings(_build_parser()))
+
+        assert offered, "the parser exposes no options at all; the walk is not reaching them"
+        assert not [option for option in offered if "password" in option.lower()]
+
+    def test_a_password_option_is_rejected_at_parse_time(self) -> None:
+        """Rejected before anything could put it in the process list.
+
+        Asserted against the parser rather than against :func:`main`'s exit
+        code: almost any bad invocation exits 2, so an end-to-end assertion
+        here would pass whether or not the option was the reason.
+        """
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["delete", "duplicates", "--password", "s3cret"])
+
+    def test_tz_is_rejected_on_delete_duplicates(self) -> None:
+        """Brief §2: ``--tz`` belongs to ``delete before``; ``duplicates`` has no boundary."""
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["delete", "duplicates", "--tz", "UTC"])
+
+    def test_tz_is_accepted_on_delete_before(self) -> None:
+        """The same option on the command that does have a boundary parses cleanly."""
+        args = _build_parser().parse_args(["delete", "before", "2025-01-01", "--tz", "UTC"])
+
+        assert args.tz == "UTC"
+
+
+class TestConfigurationSources:
+    """Brief §3: ``arwen.env`` is the only source of credentials, and of anything else."""
+
+    def test_credentials_are_never_read_from_the_environment(
+        self,
+        past_present_future: FakeCalDAVServer,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Exported ``ARWEN_CALDAV_*`` variables are not a fallback for a missing file."""
+        monkeypatch.setenv("ARWEN_CALDAV_URL", past_present_future.base_url)
+        monkeypatch.setenv("ARWEN_CALDAV_USERNAME", "user@example.org")
+        monkeypatch.setenv("ARWEN_CALDAV_PASSWORD", "s3cret")
+
+        code = main(["delete", "duplicates", *_argv(tmp_path / "absent.env", tmp_path / "backups")])
+
+        assert code == EXIT_USAGE
+        assert past_present_future.requests == [], "the run reached the server without a file"
+
+
+class TestLocalTimezoneDefault:
+    """Brief §5.1: with no ``--tz``, the boundary is resolved in the machine's own zone.
+
+    The three POSIX sources are consulted in order and the first that
+    :class:`~zoneinfo.ZoneInfo` recognises wins, so each test below removes
+    the ones above it.
+    """
+
+    def test_the_tz_variable_is_consulted_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``TZ`` outranks both files, and its IANA name is what the report will print."""
+        monkeypatch.setenv("TZ", "Europe/Rome")
+
+        zone, name = resolve_timezone(None)
+
+        assert name == "Europe/Rome"
+        assert zone == ZoneInfo("Europe/Rome")
+
+    def test_etc_timezone_is_consulted_next(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """With no ``TZ``, the name in ``/etc/timezone`` is used, stripped of whitespace."""
+        monkeypatch.delenv("TZ", raising=False)
+        timezone_file = tmp_path / "timezone"
+        timezone_file.write_text("Asia/Tokyo\n", encoding="utf-8")
+        monkeypatch.setattr("arwen.cli._TIMEZONE_FILE", timezone_file)
+
+        zone, name = resolve_timezone(None)
+
+        assert name == "Asia/Tokyo"
+        assert zone == ZoneInfo("Asia/Tokyo")
+
+    def test_an_unrecognised_candidate_is_skipped_for_the_next_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Brief §5.1: each source is only a candidate; the first *recognised* one wins."""
+        monkeypatch.setenv("TZ", "Middle/Earth")
+        timezone_file = tmp_path / "timezone"
+        timezone_file.write_text("Asia/Tokyo\n", encoding="utf-8")
+        monkeypatch.setattr("arwen.cli._TIMEZONE_FILE", timezone_file)
+
+        zone, name = resolve_timezone(None)
+
+        assert name == "Asia/Tokyo"
+        assert zone == ZoneInfo("Asia/Tokyo")
+
+    def test_the_localtime_symlink_is_the_last_iana_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The zone name is recovered from the path below ``zoneinfo/`` in the link target."""
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr("arwen.cli._TIMEZONE_FILE", tmp_path / "absent")
+        target = tmp_path / "usr" / "share" / "zoneinfo" / "America" / "New_York"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"")
+        link = tmp_path / "localtime"
+        link.symlink_to(target)
+        monkeypatch.setattr("arwen.cli._LOCALTIME_LINK", link)
+
+        zone, name = resolve_timezone(None)
+
+        assert name == "America/New_York"
+        assert zone == ZoneInfo("America/New_York")
+
+    def test_no_iana_name_at_all_falls_back_to_a_named_fixed_offset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Brief §5.1: the fallback still yields a name, because the report must print one."""
+        monkeypatch.delenv("TZ", raising=False)
+        monkeypatch.setattr("arwen.cli._TIMEZONE_FILE", tmp_path / "absent")
+        monkeypatch.setattr("arwen.cli._LOCALTIME_LINK", tmp_path / "absent-too")
+
+        with caplog.at_level(logging.WARNING, logger="arwen"):
+            _zone, name = resolve_timezone(None)
+
+        assert "fallback" in name
+        assert caplog.records, "a last-resort zone is a warning, not a silent substitution"
+
+
+class TestResourceCountInvariant:
+    """Brief §10: no operation ever increases the number of resources in the collection."""
+
+    def test_delete_before_never_adds_a_resource(
+        self, past_present_future: FakeCalDAVServer, tmp_path: Path
+    ) -> None:
+        """Neither the dry run nor the execute run leaves the collection bigger."""
+        collection = past_present_future.collections["personal"]
+        before = len(collection.resources)
+        env_file = _write_env(tmp_path, past_present_future)
+        argv = _argv(env_file, tmp_path / "backups", "--tz", "UTC")
+
+        main(["delete", "before", "2025-01-01", *argv])
+        assert len(collection.resources) == before
+
+        main(["delete", "before", "2025-01-01", *argv, "--execute"])
+        assert len(collection.resources) <= before
+
+    def test_delete_duplicates_never_adds_a_resource(self, tmp_path: Path) -> None:
+        """The same, over a collection built entirely of copies to be reduced."""
+        server = FakeCalDAVServer(collections=[_duplicate_collection(5)])
+        with server:
+            collection = server.collections["personal"]
+            before = len(collection.resources)
+            env_file = _write_env(tmp_path, server)
+            argv = _argv(env_file, tmp_path / "backups")
+
+            main(["delete", "duplicates", *argv])
+            assert len(collection.resources) == before
+
+            main(["delete", "duplicates", *argv, "--execute"])
+            assert len(collection.resources) <= before
+
+
+class TestInterrupt:
+    """Brief §7: an interrupt is exit 130, never a traceback."""
+
+    def test_an_interrupt_at_the_calendar_prompt_exits_130(
+        self,
+        past_present_future: FakeCalDAVServer,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The picker is the one place arwen blocks on the user, so it is where Ctrl-C lands.
+
+        It cannot be reached through :func:`~arwen.cli.main` under pytest:
+        :func:`~arwen.discovery.select_calendar` binds ``sys.stdin`` as a
+        default argument at import time, and by then pytest has replaced it
+        with a non-TTY stand-in, so the prompt is skipped as a usage error
+        before it can read anything. The prompt is therefore replaced here by
+        the interrupt it would have raised.
+        """
+        env_file = _write_env(tmp_path, past_present_future)
+
+        def interrupted(*_args: object, **_kwargs: object) -> NoReturn:
+            """Stand in for the picker, raising what Ctrl-C at its prompt would raise."""
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("arwen.cli.select_calendar", interrupted)
+
+        code = main(["delete", "duplicates", *_argv(env_file, tmp_path / "backups")])
+
+        assert code == EXIT_INTERRUPTED
+        assert "interrupted" in capsys.readouterr().err
+        assert _mutating(past_present_future.requests) == []

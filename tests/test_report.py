@@ -50,7 +50,8 @@ class TestFormatEventTime:
 
     def test_a_floating_datetime_carries_no_offset(self) -> None:
         """A floating date-time renders with no offset at all — that is what makes it float."""
-        value = FloatingDateTime(datetime(2024, 1, 1, 9))
+        # DTZ001: the missing tzinfo is the point — see brief §5.1.
+        value = FloatingDateTime(datetime(2024, 1, 1, 9))  # noqa: DTZ001
 
         assert format_event_time(value) == "2024-01-01T09:00:00"
 

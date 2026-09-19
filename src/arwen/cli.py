@@ -47,10 +47,12 @@ from arwen.recurrence import classify_non_recurring, is_recurring, prune_recurri
 from arwen.report import Report, ReportEntry, format_event_time, render
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
     from datetime import tzinfo
 
     from icalendar import Calendar, Component
+
+    from arwen.model import DuplicateGroup
 
 _log = logging.getLogger("arwen")
 
@@ -91,31 +93,50 @@ class _UsageError(Exception):
     """
 
 
-class _RedactingFilter(logging.Filter):
-    """Replaces the password with ``***`` in every log record that contains it.
+class _RedactingFormatter(logging.Formatter):
+    """Renders log records for the stderr handler, with the password replaced by ``***``.
 
     Brief §3 forbids the password appearing in any log output, "including
-    in verbose HTTP logs and in exception messages". A filter on the root
-    logger is the only place that covers records this codebase never
-    formats itself — ``caldav``'s own debug logging, for instance — so the
-    redaction is explicit rather than merely conventional.
+    in verbose HTTP logs and in exception messages". Both halves of that
+    sentence decide where the redaction has to live.
+
+    It belongs to the *handler*, not to the root logger. ``logging`` consults
+    a logger's own filters only for the records logged through that logger;
+    a record from a child logger is passed straight to the ancestors'
+    handlers and never meets their filters. Every record in this program
+    comes from a child — ``arwen.dav``, ``arwen.config``, ``caldav``,
+    ``urllib3`` — so a filter on the root logger would redact nothing at all.
+
+    And it belongs to the formatter rather than to a handler filter, because
+    formatting is the one point that sees the rendered message, its
+    arguments *and* the formatted traceback. Redacting the returned string
+    covers "in exception messages" without having to rewrite a record's
+    ``exc_info`` in place.
     """
 
-    def __init__(self, secret: str) -> None:
-        """Record the secret to redact. An empty secret disables redaction."""
-        super().__init__()
+    def __init__(self, fmt: str) -> None:
+        """Render records with ``fmt``, redacting nothing until :meth:`redact` is called."""
+        super().__init__(fmt)
+        self._secret = ""
+
+    def redact(self, secret: str) -> None:
+        """Replace ``secret`` with ``***`` in every record rendered from now on.
+
+        An empty secret disables redaction, which is what this formatter does
+        between :func:`_configure_logging` and the moment :func:`_run` has
+        read the credential file. Nothing in that window has the password:
+        the only record :class:`~arwen.config.Credentials` can emit before
+        handing it over is the permissions warning, which names the file.
+        """
         self._secret = secret
 
     @override
-    def filter(self, record: logging.LogRecord) -> bool:
-        """Rewrite the record's message in place, then always let it through."""
+    def format(self, record: logging.LogRecord) -> str:
+        """Render ``record``, then strike out every occurrence of the secret."""
+        rendered = super().format(record)
         if not self._secret:
-            return True
-        message = record.getMessage()
-        if self._secret in message:
-            record.msg = message.replace(self._secret, "***")
-            record.args = None
-        return True
+            return rendered
+        return rendered.replace(self._secret, "***")
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,13 +256,27 @@ def _options_from(args: argparse.Namespace) -> _Options:
     )
 
 
-def _configure_logging(*, verbose: bool) -> None:
-    """Send logging to stderr, at debug level under ``--verbose`` (brief §8)."""
+def _configure_logging(*, verbose: bool) -> _RedactingFormatter:
+    """Send logging to stderr, at debug level under ``--verbose`` (brief §8).
+
+    ``force=True`` is deliberate. Plain :func:`logging.basicConfig` does
+    nothing at all when the root logger already has a handler, which would
+    leave both arwen's output and its brief §3 redaction at the mercy of
+    whoever configured logging first.
+
+    Returns:
+        The formatter carrying the redaction, so that :func:`_run` can give
+        it the password as soon as it has read one.
+    """
+    formatter = _RedactingFormatter("%(levelname)s %(name)s: %(message)s")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(formatter)
     logging.basicConfig(
-        stream=sys.stderr,
+        handlers=[handler],
+        force=True,
         level=logging.DEBUG if verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
     )
+    return formatter
 
 
 def parse_boundary(text: str) -> date:
@@ -456,32 +491,30 @@ def _plan_recurring(
     )
 
 
-def _plan_delete_duplicates(resources: Sequence[CalendarResource]) -> _Plan:
-    """Plan ``delete duplicates`` over the whole collection, per brief §6.
+def _dedup_triage(
+    resources: Sequence[CalendarResource],
+) -> tuple[list[ReportEntry], list[DedupCandidate]]:
+    """Split a collection into brief §6.1's "not examined" entries and the rest.
 
-    Resources excluded by §6.1 — recurring ones, and anything that is not a
-    readable ``VEVENT`` — are reported as "not examined" rather than
-    silently dropped. The rest go to :func:`~arwen.dedup.group_duplicates`,
-    which groups them and never compares pairwise.
+    Recurring resources, anything that is not a readable ``VEVENT``, and
+    anything whose duplicate key cannot be derived are reported rather than
+    silently dropped: a resource missing from the report would be
+    indistinguishable from one the run never saw.
 
-    Brief §6.3 step 4's mixed key group — more than one distinct content
-    sub-group under one key — is where the winner of a content-identical
-    sub-group is itself flagged for review: its duplicates are still
-    deleted, but what remains cannot be told apart from the divergent
-    copies by key alone, so a person has to look.
+    Returns:
+        The report entries for everything excluded, and the candidates for
+        :func:`~arwen.dedup.group_duplicates`, in the order given.
     """
-    plan = _Plan(entries=[], mutations=[])
-    by_href: dict[str, CalendarResource] = {resource.href: resource for resource in resources}
+    skipped: list[ReportEntry] = []
     candidates: list[DedupCandidate] = []
-
     for resource in resources:
         if not resource.calendar.walk("VEVENT"):
-            plan.entries.append(
+            skipped.append(
                 _entry(resource, Action.SKIP_NOT_EXAMINED, "not a VEVENT resource (brief §6.1)")
             )
             continue
         if is_recurring(resource.calendar):
-            plan.entries.append(
+            skipped.append(
                 _entry(
                     resource,
                     Action.SKIP_RECURRING,
@@ -492,48 +525,72 @@ def _plan_delete_duplicates(resources: Sequence[CalendarResource]) -> _Plan:
         try:
             duplicate_key(resource.calendar)
         except (ValueError, TypeError) as exc:
-            plan.entries.append(
+            skipped.append(
                 _entry(resource, Action.SKIP_NOT_EXAMINED, f"cannot derive a duplicate key: {exc}")
             )
             continue
         candidates.append(
             DedupCandidate(href=resource.href, etag=resource.etag, calendar=resource.calendar)
         )
+    return skipped, candidates
 
+
+def _record_duplicate_group(
+    plan: _Plan, group: DuplicateGroup, by_href: Mapping[str, CalendarResource]
+) -> None:
+    """Append one duplicate key group's entries and deletions to ``plan``, per brief §6.3.
+
+    A *mixed* key group — more than one distinct content sub-group under one
+    key — is where the winner of a content-identical sub-group is itself
+    flagged for review: its duplicates are still deleted, but what remains
+    cannot be told apart from the divergent copies by key alone, so a person
+    has to look (brief §6.3 step 4).
+    """
+    mixed = len(group.kept) + len(group.needs_review) > 1
+    kept_detail = "kept: winner of a content-identical sub-group" + (
+        "; other events share its key but differ in content"
+        if mixed
+        else f", {len(group.to_delete)} copy/copies removed"
+    )
+    for winner in group.kept:
+        plan.entries.append(
+            _entry(by_href[winner.href], Action.NEEDS_REVIEW if mixed else Action.KEEP, kept_detail)
+        )
+    for member in group.needs_review:
+        plan.entries.append(
+            _entry(
+                by_href[member.href],
+                Action.NEEDS_REVIEW,
+                "shares a key with other events but differs in content; nothing deleted",
+            )
+        )
+    for member in group.to_delete:
+        plan.entries.append(
+            _entry(by_href[member.href], Action.DELETE, "byte-identical copy of the kept event")
+        )
+        plan.mutations.append(
+            _Mutation(
+                entry_index=len(plan.entries) - 1,
+                resource=by_href[member.href],
+                payload=None,
+            )
+        )
+
+
+def _plan_delete_duplicates(resources: Sequence[CalendarResource]) -> _Plan:
+    """Plan ``delete duplicates`` over the whole collection, per brief §6.
+
+    Two phases, one helper each: :func:`_dedup_triage` sets aside what §6.1
+    excludes, and :func:`_record_duplicate_group` turns each group that
+    :func:`~arwen.dedup.group_duplicates` found — grouped, never compared
+    pairwise — into report entries and deletions.
+    """
+    plan = _Plan(entries=[], mutations=[])
+    by_href = {resource.href: resource for resource in resources}
+    skipped, candidates = _dedup_triage(resources)
+    plan.entries.extend(skipped)
     for group in group_duplicates(candidates):
-        mixed = len(group.kept) + len(group.needs_review) > 1
-        for winner in group.kept:
-            plan.entries.append(
-                _entry(
-                    by_href[winner.href],
-                    Action.NEEDS_REVIEW if mixed else Action.KEEP,
-                    "kept: winner of a content-identical sub-group"
-                    + (
-                        "; other events share its key but differ in content"
-                        if mixed
-                        else f", {len(group.to_delete)} copy/copies removed"
-                    ),
-                )
-            )
-        for member in group.needs_review:
-            plan.entries.append(
-                _entry(
-                    by_href[member.href],
-                    Action.NEEDS_REVIEW,
-                    "shares a key with other events but differs in content; nothing deleted",
-                )
-            )
-        for member in group.to_delete:
-            plan.entries.append(
-                _entry(by_href[member.href], Action.DELETE, "byte-identical copy of the kept event")
-            )
-            plan.mutations.append(
-                _Mutation(
-                    entry_index=len(plan.entries) - 1,
-                    resource=by_href[member.href],
-                    payload=None,
-                )
-            )
+        _record_duplicate_group(plan, group, by_href)
     return plan
 
 
@@ -588,10 +645,10 @@ def _scan(
     return connection.list_resources(calendar_href, capabilities, TimeRange(end=end))
 
 
-def _run(args: argparse.Namespace, options: _Options) -> int:
+def _run(args: argparse.Namespace, options: _Options, redaction: _RedactingFormatter) -> int:
     """Execute one parsed invocation and return its brief §7 exit code."""
     credentials = Credentials.from_file(options.env_file)
-    logging.getLogger().addFilter(_RedactingFilter(credentials.password))
+    redaction.redact(credentials.password)
 
     before = args.target == "before"
     boundary = parse_boundary(args.date) if before else None
@@ -659,10 +716,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
 
     options = _options_from(args)
-    _configure_logging(verbose=options.verbose)
+    redaction = _configure_logging(verbose=options.verbose)
 
     try:
-        return _run(args, options)
+        return _run(args, options, redaction)
     except KeyboardInterrupt:
         print("arwen: interrupted.", file=sys.stderr)
         return EXIT_INTERRUPTED

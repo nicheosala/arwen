@@ -79,12 +79,13 @@ Instead:
   comment explaining why. Pyrefly reports the count of active suppressions on
   every run, so an obsolete one does not stay hidden.
 
-Note that Pyrefly prefers typeshed's bundled third-party stubs over a
-package's own inline annotations, and typeshed's `icalendar` stubs lag the
-version pinned here: they declare `Component.from_ical` as taking `str` and
-returning `Component`. Pass `str` to it and narrow the result with the
-`isinstance` checks the code already needs, rather than suppressing the
-mismatch.
+Note that Pyrefly resolves imports from `search_path` first, then from its
+bundled typeshed, and only then from site-packages. Typeshed removed its
+`icalendar` stubs once the package started shipping `py.typed`, but Pyrefly
+still bundles a copy of them, pinned to icalendar 6.x — so without help it
+type-checks against stubs a major version behind the one installed here.
+Listing the environment's site-packages in `search-path` puts the package's
+own, current annotations first. That is the only reason the entry is there.
 
 **Ruff must be configured with an explicit, broad rule selection** — the default
 set is too small to be a meaningful gate. Start from:

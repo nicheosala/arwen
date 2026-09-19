@@ -86,11 +86,14 @@ def test_all_day_duration_instead_of_dtend_is_added_to_dtstart() -> None:
 def test_floating_datetime_without_dtend_stays_floating() -> None:
     """A floating DTSTART with no DTEND produces a floating effective end."""
     event = Event()
-    event.add("DTSTART", datetime(2024, 3, 1, 9, 0))
+    # DTZ001 twice: a naive datetime is the subject of this test, not an
+    # oversight. RFC 5545 floating date-times carry no zone by definition
+    # (brief §5.1), so building one is the only way to exercise them.
+    event.add("DTSTART", datetime(2024, 3, 1, 9, 0))  # noqa: DTZ001
 
     end = effective_end(event)
 
-    assert end == FloatingDateTime(datetime(2024, 3, 1, 9, 0))
+    assert end == FloatingDateTime(datetime(2024, 3, 1, 9, 0))  # noqa: DTZ001
 
 
 def test_tzid_dtend_and_equivalent_utc_dtend_are_the_same_instant() -> None:
