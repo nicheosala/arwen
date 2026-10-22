@@ -30,9 +30,8 @@ implement them.
 
 ### 1.1 Typing and lint gates
 
-All three gates are declared once, in `.pre-commit-config.yaml`, and CI runs
-`pre-commit run --all-files` rather than restating them — the two can never
-drift apart. The build is not done until all three exit cleanly, with **zero
+All three gates are declared once, in `.pre-commit-config.yaml`, and run
+locally as git hooks; there is no CI. The build is not done until all three exit cleanly, with **zero
 errors and zero warnings**:
 
 ```bash
@@ -410,7 +409,7 @@ testable without a server.
 
 ## 10. Tests
 
-pytest, in three layers. Layers 1 and 2 must run offline in CI with no
+pytest, in three layers. Layers 1 and 2 must run offline, with no
 credentials and no network.
 
 ### Layer 1 — unit tests on the pure functions

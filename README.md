@@ -1,6 +1,5 @@
 # arwen
 
-[![CI](https://github.com/nicheosala/arwen/actions/workflows/ci.yml/badge.svg)](https://github.com/nicheosala/arwen/actions/workflows/ci.yml)
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/)
 [![License: CC0-1.0](https://img.shields.io/badge/license-CC0--1.0-lightgrey.svg)](LICENSE)
 
@@ -25,8 +24,8 @@ uv sync
 ```
 
 `uv sync` installs the pinned Python 3.14 interpreter from `.python-version`
-and every dependency from `uv.lock`, so the environment is identical to the
-one CI uses. That gives you the `arwen` command inside the project
+and every dependency from `uv.lock`, so every checkout gets the same
+environment. That gives you the `arwen` command inside the project
 environment:
 
 ```bash
@@ -379,15 +378,16 @@ of `delete before`.
 
 ## Development
 
-Every gate is defined once, in `.pre-commit-config.yaml`, and run the same way
-locally and in CI. Install the hooks once:
+Every gate is defined once, in `.pre-commit-config.yaml`, and runs locally
+only: there is no CI, so the hooks are the only checks. Install them once:
 
 ```bash
 uv run pre-commit install
 ```
 
-From then on each commit runs the gates on what you changed. To run them
-across the whole tree — exactly what `.github/workflows/ci.yml` does:
+From then on each commit runs the gates on what you changed, and each push
+runs them again together with the test suite and the dependency audit. To
+run the commit gates across the whole tree:
 
 ```bash
 uv run pre-commit run --all-files
@@ -409,8 +409,8 @@ The Python version is declared in two files and derived everywhere else:
 target from the latter and Pyrefly reads its own from the interpreter, so
 neither carries a copy that could fall out of step.
 
-The test suite is the one check CI adds on top of the hooks, because it is too
-slow for a commit hook. It runs offline, with no credentials and no network,
+The test suite runs at push rather than at commit, because it is too slow
+for a commit hook. It runs offline, with no credentials and no network,
 and reports coverage against the threshold in `[tool.coverage.report]`:
 
 ```bash
@@ -428,9 +428,7 @@ uv self update                    # uv itself (if installed with the official sc
 uv lock --upgrade                 # everything in uv.lock, transitive dependencies included
 uv sync                           # bring .venv in line with the new lock
 uv run pre-commit autoupdate      # the pre-commit-hooks rev in .pre-commit-config.yaml
-pinact run --update               # action SHAs and version comments in .github/workflows/
-uv run pre-commit run --all-files --hook-stage pre-push
-uv audit --preview-features audit-command
+uv run pre-commit run --all-files --hook-stage pre-push   # every gate, tests and audit included
 ```
 
 None of those commands touch the following, which stay manual: the `uv_build`
@@ -438,16 +436,12 @@ constraint in `[build-system]` of `pyproject.toml` (keep it in step with the
 uv version), the lower bounds of the dependencies in `pyproject.toml` (`uv
 lock --upgrade` stays within the constraints already written), and the Python
 version in `.python-version` and `requires-python`.
-[pinact](https://github.com/suzuki-shunsuke/pinact) is installed separately;
-alternatively, look up each action's latest release on GitHub and copy its
-SHA.
 
-If the checks pass, commit `deps: update dependencies` on `main` and push: CI
-runs the same checks again.
+If the checks pass, commit `deps: update dependencies` on `main` and push.
 
-The audit job in `.github/workflows/ci.yml` also reruns weekly, because an
-advisory can be published against a lock file that has not changed. To scan
-the lock file yourself:
+The dependency audit runs on every push, not only when `uv.lock` changes,
+because an advisory can be published against a lock file that has not
+changed. To scan the lock file yourself:
 
 ```bash
 uv audit --preview-features audit-command

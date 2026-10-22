@@ -49,9 +49,9 @@ there before it gets an implementation; a row that says *unproven* is a to-do.
 
 ## §1.1 quality gates
 
-The gates are defined once, in `.pre-commit-config.yaml`. CI runs
-`pre-commit run --all-files`, never its own copy of the commands, so the two
-cannot drift apart. Adding a gate means adding a hook there and nowhere else.
+The gates are defined once, in `.pre-commit-config.yaml`, and run locally
+only: there is no CI. Adding a gate means adding a hook there and nowhere
+else.
 The build is not done until all four exit cleanly, with zero errors and zero
 warnings:
 
@@ -76,7 +76,7 @@ uv run pytest
   the conflict; never disable a rule just to make the gate pass.
 - `pytest` is a gate like the other three, but it runs at the `pre-push`
   stage rather than on every commit: the suite is too slow for a commit hook.
-  CI gives it a job of its own, so nothing reaches `main` without it. Its
+  `uv audit` runs at `pre-push` too, because it needs the network. Its
   coverage threshold (`fail_under = 87`, measured with `branch = true`) lives
   in `[tool.coverage.report]` in `pyproject.toml` — raise it as coverage
   improves, never lower it to make the build pass.

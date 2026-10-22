@@ -1,11 +1,8 @@
 # Single source of truth for the quality gates.
 #
-# CI does not restate these commands: `.github/workflows/ci.yml` runs
-# `pre-commit run --all-files`, so the hooks at the default stage below are
-# literally the checks that gate every push and pull request. Keep it that
-# way — a check added here is a check CI runs, and there is nowhere else to
-# add one. The exception is `pytest`, which is too slow for a commit hook: it
-# runs at pre-push locally and has a job of its own in CI.
+# There is no CI: the gates run locally only. Hooks without `stages` run at
+# both commit and push; the slow or network-bound ones (`pytest`, `uv audit`)
+# run at push only. A check that is not here does not run anywhere.
 #
 # Every project-specific hook runs through `uv run --frozen`, so the tool
 # versions come from `uv.lock` rather than from a second set of pinned
@@ -74,6 +71,17 @@ repos:
       - id: pytest
         name: pytest
         entry: uv run --frozen pytest
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Depends on the advisory database, not on the code: it can fail with
+      # no change on our side, so it runs on every push rather than only when
+      # uv.lock changes.
+      - id: uv-audit
+        name: uv audit
+        entry: uv audit --preview-features audit-command
         language: system
         always_run: true
         pass_filenames: false

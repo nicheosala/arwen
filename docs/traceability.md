@@ -36,7 +36,7 @@ and a row that says *unproven* is a to-do, not a note.
 | Everything in English | — | unproven (not mechanically checkable) |
 
 §1.1's gates are not tests; they are the hooks in `.pre-commit-config.yaml`,
-run by CI. `pyproject.toml` is their only configuration.
+run as git hooks. `pyproject.toml` is their only configuration.
 
 ## §2 Command surface
 
