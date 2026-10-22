@@ -417,15 +417,40 @@ and reports coverage against the threshold in `[tool.coverage.report]`:
 uv run pytest
 ```
 
-Dependency updates are Dependabot's job: it watches the GitHub Actions used by
-the workflows and every entry in `uv.lock`, including the dev tools and the
-`uv-secure` scanner that the `audit` job runs. The one pin it cannot see is the
-`pre-commit-hooks` revision in `.pre-commit-config.yaml`, because Dependabot
-has no pre-commit ecosystem; `.github/workflows/update-hooks.yml` bumps that
-one weekly and opens a pull request. To scan the lock file yourself:
+### Updating dependencies
+
+No bot updates this repository: it is done by hand, every now and then,
+starting from a clean, up-to-date `main`.
 
 ```bash
-uv run --frozen --only-group audit uv-secure
+git pull
+uv self update                    # uv itself (if installed with the official script)
+uv lock --upgrade                 # everything in uv.lock, transitive dependencies included
+uv sync                           # bring .venv in line with the new lock
+uv run pre-commit autoupdate      # the pre-commit-hooks rev in .pre-commit-config.yaml
+pinact run --update               # action SHAs and version comments in .github/workflows/
+uv run pre-commit run --all-files --hook-stage pre-push
+uv audit --preview-features audit-command
+```
+
+None of those commands touch the following, which stay manual: the `uv_build`
+constraint in `[build-system]` of `pyproject.toml` (keep it in step with the
+uv version), the lower bounds of the dependencies in `pyproject.toml` (`uv
+lock --upgrade` stays within the constraints already written), and the Python
+version in `.python-version` and `requires-python`.
+[pinact](https://github.com/suzuki-shunsuke/pinact) is installed separately;
+alternatively, look up each action's latest release on GitHub and copy its
+SHA.
+
+If the checks pass, commit `deps: update dependencies` on `main` and push: CI
+runs the same checks again.
+
+The audit job in `.github/workflows/ci.yml` also reruns weekly, because an
+advisory can be published against a lock file that has not changed. To scan
+the lock file yourself:
+
+```bash
+uv audit --preview-features audit-command
 ```
 
 The test corpus in `tests/fixtures/` is byte-exact and `.gitattributes` marks

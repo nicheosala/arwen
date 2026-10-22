@@ -26,8 +26,8 @@ jobs:
     timeout-minutes: 10
     steps:
       # Actions are pinned to a commit SHA, not a tag: a tag can be moved by
-      # its author, a SHA cannot. Dependabot bumps the SHA and the trailing
-      # version comment together.
+      # its author, a SHA cannot. The SHA and the trailing version comment are
+      # bumped together, by hand (see "Updating dependencies" in the README).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
