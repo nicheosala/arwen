@@ -31,8 +31,8 @@ implement them.
 ### 1.1 Typing and lint gates
 
 All three gates are declared once, in `.pre-commit-config.yaml`, and run
-locally as git hooks; there is no CI. The build is not done until all three exit cleanly, with **zero
-errors and zero warnings**:
+locally as git hooks; there is no CI. The build is not done until all three
+exit cleanly, with **zero errors and zero warnings**:
 
 ```bash
 uv run ruff check .
