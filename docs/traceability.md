@@ -56,6 +56,8 @@ run as git hooks. `pyproject.toml` is their only configuration.
 | Requirement | Proven by | Status |
 | --- | --- | --- |
 | `KEY=VALUE` parsing: comments, blank lines, one layer of quotes | `test_config.py::TestParsing` (7 cases) | proven |
+| `ARWEN_CALDAV_PASSWORD_COMMAND`: stdout minus the line break, only when the password is unset | `test_config.py::TestPasswordCommand::test_password_is_the_command_output`, `::test_inline_password_wins_and_the_command_never_runs` | proven |
+| …a failing or silent command is a usage error that never carries its output | `test_config.py::TestPasswordCommand::test_failing_command_raises_config_error`, `::test_error_never_carries_the_output` | proven |
 | The password never appears in `argv`; there is no `--password` option | `test_cli.py::TestCommandSurface::test_no_parser_anywhere_offers_a_password_option`, `::test_a_password_option_is_rejected_at_parse_time` | proven |
 | The password never appears in a repr | `test_config.py::TestRedaction::test_repr_omits_password` | proven |
 | The password is never logged, including verbose HTTP logs | `test_cli.py::TestPasswordRedaction::test_records_from_a_third_party_logger_are_redacted`, `::test_records_from_arwens_own_modules_are_redacted` | proven |

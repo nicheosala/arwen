@@ -103,6 +103,63 @@ class TestParsing:
             Credentials.from_file(tmp_path / "does-not-exist.env")
 
 
+class TestPasswordCommand:
+    """``ARWEN_CALDAV_PASSWORD_COMMAND``: the password from a command's output."""
+
+    _HEAD = "ARWEN_CALDAV_URL=https://example.org\nARWEN_CALDAV_USERNAME=user\n"
+
+    def test_password_is_the_command_output(self, tmp_path: Path) -> None:
+        """Without an inline password, the command's stdout minus the line break is used."""
+        path = _write_env(tmp_path, self._HEAD + "ARWEN_CALDAV_PASSWORD_COMMAND=echo 'se cret'\n")
+
+        assert Credentials.from_file(path).password == "se cret"
+
+    def test_inline_password_wins_and_the_command_never_runs(self, tmp_path: Path) -> None:
+        """With both keys set, the inline password is used and the command is not run."""
+        marker = tmp_path / "ran"
+        path = _write_env(
+            tmp_path,
+            self._HEAD
+            + "ARWEN_CALDAV_PASSWORD=secret\n"
+            + f"ARWEN_CALDAV_PASSWORD_COMMAND=touch {marker}\n",
+        )
+
+        assert Credentials.from_file(path).password == "secret"
+        assert not marker.exists()
+
+    @pytest.mark.parametrize(
+        ("command", "message"),
+        [("exit 3", "exited with status 3"), ("true", "printed nothing")],
+    )
+    def test_failing_command_raises_config_error(
+        self, tmp_path: Path, command: str, message: str
+    ) -> None:
+        """A command that fails or prints nothing is a ConfigError naming the key."""
+        path = _write_env(tmp_path, self._HEAD + f"ARWEN_CALDAV_PASSWORD_COMMAND={command}\n")
+
+        with pytest.raises(ConfigError, match=f"ARWEN_CALDAV_PASSWORD_COMMAND {message}"):
+            Credentials.from_file(path)
+
+    def test_error_never_carries_the_output(self, tmp_path: Path) -> None:
+        """A failing command's stdout, which may hold the password, stays out of the error."""
+        path = _write_env(
+            tmp_path, self._HEAD + "ARWEN_CALDAV_PASSWORD_COMMAND=echo leaked; exit 1\n"
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            Credentials.from_file(path)
+
+        assert "leaked" not in str(caught.value)
+
+    def test_neither_key_names_both_in_the_error(self, tmp_path: Path) -> None:
+        """With no password and no command, the error offers both keys."""
+        path = _write_env(tmp_path, self._HEAD)
+
+        both = "ARWEN_CALDAV_PASSWORD or ARWEN_CALDAV_PASSWORD_COMMAND"
+        with pytest.raises(ConfigError, match=both):
+            Credentials.from_file(path)
+
+
 class TestRedaction:
     """The password must never appear in a repr, per brief §3."""
 

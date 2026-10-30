@@ -54,6 +54,19 @@ All three keys are required. Values may be wrapped in one layer of matching
 single or double quotes, which is stripped. `arwen.env.example` is a template
 to copy; `arwen.env` itself is gitignored.
 
+Instead of the password itself you can give a command that prints it, for
+example to read it from a password manager:
+
+```ini
+ARWEN_CALDAV_PASSWORD_COMMAND=secret-tool lookup Title Calendar
+```
+
+The command runs through the shell only when `ARWEN_CALDAV_PASSWORD` is unset.
+Its output, minus the trailing line break, is the password. It inherits the
+terminal, so a command that asks for a master password, such as
+`keepassxc-cli show -s -a Password ~/Passwords.kdbx Calendar`, can prompt for
+it. If it fails or prints nothing, `arwen` stops with a usage error.
+
 **The password is never accepted on the command line.** There is no
 `--password` option, so it never appears in `argv`, in your shell history, or
 in the process list. It is also redacted from every log line, including the

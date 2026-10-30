@@ -144,6 +144,13 @@ ARWEN_CALDAV_PASSWORD=secret
 
 - Write a small stdlib parser: `KEY=VALUE`, `#` comments, optional surrounding
   quotes, blank lines ignored. Do not add a dotenv dependency.
+- Instead of `ARWEN_CALDAV_PASSWORD`, the file may set
+  `ARWEN_CALDAV_PASSWORD_COMMAND`: a shell command whose stdout, minus the
+  trailing line break, is the password (for a password manager such as
+  `keepassxc-cli` or `secret-tool`). It runs only when `ARWEN_CALDAV_PASSWORD`
+  is unset, inherits the terminal so it can prompt, and a failure — non-zero
+  exit or empty output — is a usage error whose message never carries the
+  command's output.
 - **The password must never appear in `argv`.** There is no `--password` option.
 - **The password must never be logged**, including in verbose HTTP logs and in
   exception messages — redact it explicitly.
